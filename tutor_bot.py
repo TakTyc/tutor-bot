@@ -20,7 +20,7 @@ filters,
 
 from openai import OpenAI
 
-//------------------- Конфиг -------------------
+#------------------- Конфиг -------------------
 
 load_dotenv()
 
@@ -94,7 +94,7 @@ level=logging.INFO,
 )
 logger = logging.getLogger(name)
 
-------------------- Вспомогательные для ИИ -------------------
+#------------------- Вспомогательные для ИИ -------------------
 
 async def ask_ai_text(prompt: str, system_prompt: str = None) -> str:
 """
@@ -177,7 +177,7 @@ temperature=0.4,
 )
 return resp.choices[0].message.content
 
-------------------- Доступ / подписки -------------------
+#------------------- Доступ / подписки -------------------
 
 def get_user_state(user_id: int):"""
 Получить и обновить (при смене дня) состояние пользователя.
@@ -283,7 +283,7 @@ return True
 await send_paywall(update, context)
 return False
 
-------------------- Stars / подписки: заглушка -------------------
+#------------------- Stars / подписки: заглушка -------------------
 
 async def handle_subscription_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
@@ -316,7 +316,7 @@ await query.edit_message_text(
 "Нужно дополнить этот блок по официальной документации Bot API."
 )
 
-------------------- Хендлеры Telegram -------------------
+#------------------- Хендлеры Telegram -------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 user = update.effective_user
