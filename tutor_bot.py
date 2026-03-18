@@ -42,7 +42,7 @@ else:
 FREE_USER_IDS = {5418608670}
 
 # Тестовый режим подписок (теперь с реальной оплатой)
-TEST_SUBSCRIPTION_MODE = True  # Оставьте True для тестирования, False для продакшена
+TEST_SUBSCRIPTION_MODE = False  # Оставьте True для тестирования, False для продакшена
 
 # Хранилище состояния пользователей в памяти.
 user_state: dict[int, dict] = {}
@@ -416,7 +416,7 @@ async def send_subscription_invoice(message: Message, plan_key: str):
     # Создаем клавиатуру с кнопкой оплаты
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"Оплатить {plan['stars']} ⭐️", pay=False)]
+            [InlineKeyboardButton(text=f"Оплатить {plan['stars']} ⭐️", pay=True)]
         ]
     )
     
