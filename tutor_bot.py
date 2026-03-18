@@ -3,12 +3,12 @@ import logging
 import os
 from datetime import datetime, timedelta, date, timezone
 from io import BytesIO
-from aiogram.client.default import DefaultBotProperties
 
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command
+from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -16,8 +16,9 @@ from aiogram.types import (
     InlineKeyboardButton,
     LabeledPrice,
     PreCheckoutQuery,
-    SuccessfulPayment
+    SuccessfulPayment,
 )
+
 from openai import OpenAI
 
 # ------------------- Конфиг -------------------
@@ -41,8 +42,10 @@ else:
 # твой ID — без ограничений
 FREE_USER_IDS = {5418608670}
 
-# Тестовый режим подписок (теперь с реальной оплатой)
-TEST_SUBSCRIPTION_MODE = False  # Оставьте True для тестирования, False для продакшена
+# Режим подписок:
+# True — тестовый (без реальной оплаты, сразу активируется подписка)
+# False — реальный (через Stars-инвойс)
+TEST_SUBSCRIPTION_MODE = False
 
 # Хранилище состояния пользователей в памяти.
 user_state: dict[int, dict] = {}
@@ -68,10 +71,9 @@ SUB_PLANS = {
 
 MAX_FREE_PER_DAY = 5
 
-# Ежедневное задание
-DAILY_QUEST_REQUIRED = 3
-DAILY_QUEST_XP_REWARD = 10
-DAILY_QUEST_BALANCE_REWARD = 10
+# Награда за задания (тесты по предметам)
+TASK_XP_REWARD = 5
+TASK_BALANCE_REWARD = 5
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -80,14 +82,90 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 bot = Bot(
-token=TELEGRAM_BOT_TOKEN,
-default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    token=TELEGRAM_BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
 
 dp = Dispatcher()
 
+# ------------------- Вопросы по предметам -------------------
+# Простейший банк вопросов. Можно расширять.
+
+SUBJECT_TASKS = {
+    "math": [
+        {
+            "q": "Математика: чему равно 7 × 8?",
+            "options": ["48", "54", "56", "64"],
+            "answer_index": 2,
+        },
+        {
+            "q": "Математика: корень из 81?",
+            "options": ["7", "8", "9", "10"],
+            "answer_index": 2,
+        },
+    ],
+    "russian": [
+        {
+            "q": "Русский: где слово с НЕ пишется СЛИТНО?",
+            "options": [
+                "не рад",
+                "неправда",
+                "не был",
+                "не готов",
+            ],
+            "answer_index": 1,
+        },
+        {
+            "q": "Русский: укажи слово с безударной гласной в корне:",
+            "options": [
+                "гора",
+                "лес",
+                "трава",
+                "дуб",
+            ],
+            "answer_index": 2,
+        },
+    ],
+    "english": [
+        {
+            "q": "English: Choose the correct translation: «Я учусь в школе.»",
+            "options": [
+                "I studying at school.",
+                "I study at school.",
+                "I am study at school.",
+                "I am studying at the school yesterday.",
+            ],
+            "answer_index": 1,
+        },
+        {
+            "q": "English: «cat» — это…",
+            "options": ["кошка", "собака", "птица", "рыба"],
+            "answer_index": 0,
+        },
+    ],
+    "physics": [
+        {
+            "q": "Физика: какая величина измеряется в Ньютонах (Н)?",
+            "options": ["Масса", "Сила", "Скорость", "Время"],
+            "answer_index": 1,
+        },
+        {
+            "q": "Физика: чему примерно равна ускорение свободного падения g на Земле?",
+            "options": ["1 м/с²", "3 м/с²", "9,8 м/с²", "100 м/с²"],
+            "answer_index": 2,
+        },
+    ],
+}
+
+SUBJECT_NAMES = {
+    "math": "📐 Математика",
+    "russian": "📚 Русский",
+    "english": "🇬🇧 Английский",
+    "physics": "⚡️ Физика",
+}
 
 # ------------------- Вспомогательные для ИИ -------------------
+
 
 async def ask_ai_text(prompt: str, system_prompt: str | None = None) -> str:
     """Текстовый запрос к ИИ (репетитор)."""
@@ -169,6 +247,7 @@ async def analyze_image_with_question(image_bytes: bytes, question: str) -> str:
 
 # ------------------- Состояние пользователя -------------------
 
+
 def get_user_state(user_id: int, display_name: str | None = None) -> dict:
     today = date.today()
     state = user_state.get(user_id)
@@ -179,23 +258,17 @@ def get_user_state(user_id: int, display_name: str | None = None) -> dict:
             "subscription_expires_at": None,
             "balance": 0,
             "xp": 0,
-            "last_daily_date": None,
-            "today_questions": 0,
-            "today_photos": 0,
-            "today_voices": 0,
             "display_name": display_name or f"user_{user_id}",
-            "mode": None,
+            "mode": None,  # режимы ('topup', 'quiz_answer' и т.п.)
+            "quiz_subject": None,
+            "quiz_question_index": None,
         }
         user_state[user_id] = state
         return state
 
-    # Обновление даты и сброс дневных счётчиков
     if state["last_date"] != today:
         state["free_used_today"] = 0
         state["last_date"] = today
-        state["today_questions"] = 0
-        state["today_photos"] = 0
-        state["today_voices"] = 0
 
     if display_name:
         state["display_name"] = display_name
@@ -266,14 +339,46 @@ def build_main_menu_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="📆 Ежедневные задания", callback_data="menu_daily"
+                    text="📆 Задания по предметам", callback_data="menu_tasks"
                 ),
                 InlineKeyboardButton(
                     text="🏆 Лидерборд", callback_data="menu_top"
                 ),
             ],
+            [
+                InlineKeyboardButton(
+                    text="🏠 Главное меню", callback_data="menu_home"
+                ),
+            ],
         ]
     )
+
+
+def build_subjects_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=SUBJECT_NAMES["math"], callback_data="task_math"
+            ),
+            InlineKeyboardButton(
+                text=SUBJECT_NAMES["russian"], callback_data="task_russian"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text=SUBJECT_NAMES["english"], callback_data="task_english"
+            ),
+            InlineKeyboardButton(
+                text=SUBJECT_NAMES["physics"], callback_data="task_physics"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="⬅️ Назад", callback_data="menu_home"
+            ),
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def send_paywall(message: Message) -> None:
@@ -327,45 +432,7 @@ async def ensure_access(message: Message) -> bool:
     return False
 
 
-# ------------------- Ежедневные задания и XP -------------------
-
-def increment_activity(state: dict, kind: str) -> None:
-    state["today_questions"] += 1
-    if kind == "photo":
-        state["today_photos"] += 1
-    elif kind == "voice":
-        state["today_voices"] += 1
-
-
-async def maybe_complete_daily(message: Message, state: dict) -> None:
-    today = date.today()
-    if state["last_daily_date"] == today:
-        return  # уже получал награду сегодня
-
-    if state["today_questions"] >= DAILY_QUEST_REQUIRED:
-        state["last_daily_date"] = today
-        state["xp"] += DAILY_QUEST_XP_REWARD
-        state["balance"] += DAILY_QUEST_BALANCE_REWARD
-        await message.answer(
-            "🎉 Ежедневное задание выполнено!\n"
-            f"Ты получил {DAILY_QUEST_XP_REWARD} опыта и "
-            f"{DAILY_QUEST_BALANCE_REWARD} к балансу. 💰"
-        )
-
-
-def format_daily_status(state: dict) -> str:
-    today_count = state["today_questions"]
-    need = DAILY_QUEST_REQUIRED
-    done = state["last_daily_date"] == date.today()
-    status = "✅ Выполнено" if done else "⏳ В процессе"
-    return (
-        "📆 Ежедневное задание:\n"
-        f"• Задать {need} любых вопроса боту (текст/голос/фото)\n"
-        f"• Прогресс: {today_count}/{need}\n"
-        f"• Статус: {status}\n\n"
-        "Награда за выполнение: "
-        f"{DAILY_QUEST_XP_REWARD} XP и {DAILY_QUEST_BALANCE_REWARD} к балансу. 💎"
-    )
+# ------------------- Профиль и лидерборд -------------------
 
 
 def format_profile(state: dict) -> str:
@@ -386,7 +453,6 @@ def format_leaderboard() -> str:
     if not user_state:
         return "🏆 Пока нет данных для лидерборда."
 
-    # сортируем по XP
     sorted_users = sorted(
         user_state.items(), key=lambda kv: kv[1].get("xp", 0), reverse=True
     )
@@ -401,32 +467,36 @@ def format_leaderboard() -> str:
 
 # =================== ОПЛАТА TELEGRAM STARS ===================
 
+
 async def send_subscription_invoice(message: Message, plan_key: str):
     """
-    Отправляет инвойс для оплаты подписки Stars
+    Отправляет инвойс для оплаты подписки Stars.
+    Для Stars:
+    - provider_token = ""
+    - currency = "XTR"
+    - prices = [LabeledPrice(label="XTR", amount=цена)]
     """
     plan = SUB_PLANS[plan_key]
-    
-    # Для Stars платежей:
-    # - provider_token = "" (пустая строка)
-    # - currency = "XTR"
-    # - prices = [LabeledPrice(label="XTR", amount=цена)] [citation:8]
+
     prices = [LabeledPrice(label="XTR", amount=plan["stars"])]
-    
-    # Создаем клавиатуру с кнопкой оплаты
+
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"Оплатить {plan['stars']} ⭐️", pay=True)]
+            [
+                InlineKeyboardButton(
+                    text=f"Оплатить {plan['stars']} ⭐️", pay=True
+                )
+            ]
         ]
     )
-    
+
     await message.answer_invoice(
         title=plan["title"],
-        description=f"Оформление подписки на {plan['title'].lower()}",
+        description=f"Оформление подписки: {plan['title'].lower()}",
         prices=prices,
-        provider_token="",  # Обязательно пустая строка для Stars [citation:8]
-        payload=f"subscription_{plan_key}",  # Уникальный payload для идентификации
-        currency="XTR",  # Обязательно XTR для Stars [citation:8]
+        provider_token="",  # пустая строка для Stars
+        payload=f"subscription_{plan_key}",
+        currency="XTR",
         reply_markup=keyboard,
     )
 
@@ -434,8 +504,9 @@ async def send_subscription_invoice(message: Message, plan_key: str):
 @dp.callback_query(F.data.startswith("sub_"))
 async def handle_subscription_callback(query: CallbackQuery) -> None:
     """
-    Обработчик нажатий на кнопки подписки.
-    Теперь с реальной оплатой через Stars.
+    Нажатие на кнопки подписки.
+    Тестовый режим — без оплаты.
+    Продакшен — через Stars.
     """
     await query.answer()
     data = query.data
@@ -447,46 +518,37 @@ async def handle_subscription_callback(query: CallbackQuery) -> None:
         await query.message.edit_text("Неизвестный тип подписки. ❌")
         return
 
-    plan_key = data.split("_", 1)[1]  # day / month / year
-    
+    plan_key = data.split("_", 1)[1]
+
     if TEST_SUBSCRIPTION_MODE:
-        # Тестовый режим - без реальной оплаты
         new_exp = add_subscription(user.id, plan_key)
         await query.message.edit_text(
             f"{SUB_PLANS[plan_key]['title']} активирована ✅ (ТЕСТОВЫЙ РЕЖИМ).\n"
             f"Подписка действует до: {new_exp.strftime('%Y-%m-%d %H:%M UTC')} 🕒"
         )
     else:
-        # Реальная оплата - отправляем инвойс
         await send_subscription_invoice(query.message, plan_key)
 
 
 @dp.pre_checkout_query()
 async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery) -> None:
-    """
-    Обязательный обработчик для подтверждения платежа.
-    Должен ответить в течение 10 секунд. [citation:2][citation:8]
-    """
-    logger.info(f"Pre-checkout query received: {pre_checkout_query.invoice_payload}")
-    # Всегда отвечаем ok=True для принятия платежа
+    """Подтверждение платежа."""
+    logger.info(f"Pre-checkout query: {pre_checkout_query.invoice_payload}")
     await pre_checkout_query.answer(ok=True)
 
 
 @dp.message(F.successful_payment)
 async def successful_payment_handler(message: Message) -> None:
-    """
-    Обработчик успешного платежа.
-    Активирует подписку после оплаты.
-    """
+    """Успешный платеж → активируем подписку."""
     user = message.from_user
     if not user:
         return
-    
+
     payment: SuccessfulPayment = message.successful_payment
     payload = payment.invoice_payload
-    
-    logger.info(f"Successful payment from user {user.id}, payload: {payload}")
-    
+
+    logger.info(f"Successful payment from {user.id}, payload: {payload}")
+
     if payload.startswith("subscription_"):
         plan_key = payload.replace("subscription_", "")
         if plan_key in SUB_PLANS:
@@ -498,27 +560,144 @@ async def successful_payment_handler(message: Message) -> None:
                 "Спасибо за поддержку! 🙏"
             )
         else:
-            await message.answer("✅ Оплата прошла успешно, но возникла ошибка активации. Обратитесь в поддержку.")
+            await message.answer(
+                "✅ Оплата прошла успешно, но возникла ошибка активации. Обратитесь в поддержку."
+            )
     else:
         await message.answer("✅ Оплата прошла успешно! Спасибо!")
 
 
 @dp.message(Command("paysupport"))
 async def pay_support_handler(message: Message) -> None:
-    """
-    Обязательная команда для модерации Telegram.
-    Информация о возвратах и поддержке. [citation:8]
-    """
+    """Информация о поддержке платежей."""
     await message.answer(
         "🛟 Поддержка платежей\n\n"
         "По вопросам возврата средств и проблем с оплатой обращайтесь:\n"
-        "• Напишите @your_support_username\n"
-        "• Или используйте команду /support\n\n"
+        "• Напишите @your_support_username\n\n"
         "Возврат средств возможен в течение 7 дней после покупки при наличии технических проблем."
     )
 
 
-# ------------------- Меню (профиль, пополнение, дейлики, топ) -------------------
+# ------------------- Задания по предметам (тесты) -------------------
+
+
+@dp.callback_query(F.data == "menu_tasks")
+async def menu_tasks(query: CallbackQuery) -> None:
+    await query.answer()
+    await query.message.edit_text(
+        "📆 Выбери предмет для задания:",
+        reply_markup=build_subjects_keyboard(),
+    )
+
+
+@dp.callback_query(F.data.startswith("task_"))
+async def handle_subject_task(query: CallbackQuery) -> None:
+    await query.answer()
+    user = query.from_user
+    if not user:
+        return
+    display_name = user.full_name or user.username or f"user_{user.id}"
+    state = get_user_state(user.id, display_name=display_name)
+
+    subject_key = query.data.replace("task_", "")
+    tasks = SUBJECT_TASKS.get(subject_key)
+    if not tasks:
+        await query.message.edit_text(
+            "Для этого предмета пока нет заданий. 😕",
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return
+
+    import random
+
+    idx = random.randint(0, len(tasks) - 1)
+    task = tasks[idx]
+
+    state["mode"] = "quiz_answer"
+    state["quiz_subject"] = subject_key
+    state["quiz_question_index"] = idx
+
+    options = task["options"]
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text=f"{i+1}. {opt}",
+                callback_data=f"quiz_{subject_key}_{idx}_{i}",
+            )
+        ]
+        for i, opt in enumerate(options)
+    ]
+    buttons.append(
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_tasks")]
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    await query.message.edit_text(
+        f"{SUBJECT_NAMES[subject_key]}\n\n{task['q']}",
+        reply_markup=kb,
+    )
+
+
+@dp.callback_query(F.data.startswith("quiz_"))
+async def handle_quiz_answer(query: CallbackQuery) -> None:
+    await query.answer()
+    user = query.from_user
+    if not user:
+        return
+    display_name = user.full_name or user.username or f"user_{user.id}"
+    state = get_user_state(user.id, display_name=display_name)
+
+    data = query.data  # quiz_subject_idx_answer
+    try:
+        _, subject_key, q_idx_str, ans_idx_str = data.split("_", 3)
+        q_idx = int(q_idx_str)
+        ans_idx = int(ans_idx_str)
+    except Exception:
+        await query.message.edit_text(
+            "Что-то пошло не так с разбором ответа. 😔",
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return
+
+    tasks = SUBJECT_TASKS.get(subject_key)
+    if not tasks or not (0 <= q_idx < len(tasks)):
+        await query.message.edit_text(
+            "Вопрос не найден. Попробуй ещё раз. 🙂",
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return
+
+    task = tasks[q_idx]
+    correct_idx = task["answer_index"]
+
+    if ans_idx == correct_idx:
+        state["xp"] += TASK_XP_REWARD
+        state["balance"] += TASK_BALANCE_REWARD
+        text = (
+            "✅ Верно!\n\n"
+            f"+{TASK_XP_REWARD} XP и +{TASK_BALANCE_REWARD} к балансу. 💰\n\n"
+            f"Правильный ответ: {task['options'][correct_idx]}"
+        )
+    else:
+        text = (
+            "❌ Неверно.\n\n"
+            f"Правильный ответ: {task['options'][correct_idx]}\n"
+            "Попробуй ещё одно задание! 🙂"
+        )
+
+    state["mode"] = None
+    state["quiz_subject"] = None
+    state["quiz_question_index"] = None
+
+    await query.message.edit_text(
+        text,
+        reply_markup=build_main_menu_keyboard(),
+    )
+
+
+# ------------------- Меню (профиль, баланс, топ) -------------------
+
 
 @dp.message(Command("menu"))
 async def cmd_menu(message: Message) -> None:
@@ -528,17 +707,11 @@ async def cmd_menu(message: Message) -> None:
 @dp.message(Command("profile"))
 async def cmd_profile(message: Message) -> None:
     user = message.from_user
+    if not user:
+        return
     display_name = user.full_name or user.username or f"user_{user.id}"
     state = get_user_state(user.id, display_name=display_name)
     await message.answer(format_profile(state))
-
-
-@dp.message(Command("daily"))
-async def cmd_daily(message: Message) -> None:
-    user = message.from_user
-    display_name = user.full_name or user.username or f"user_{user.id}"
-    state = get_user_state(user.id, display_name=display_name)
-    await message.answer(format_daily_status(state))
 
 
 @dp.message(Command("top"))
@@ -561,10 +734,10 @@ async def handle_menu_callback(query: CallbackQuery) -> None:
             format_profile(state),
             reply_markup=build_main_menu_keyboard(),
         )
-    elif data == "menu_daily":
+    elif data == "menu_tasks":
         await query.message.edit_text(
-            format_daily_status(state),
-            reply_markup=build_main_menu_keyboard(),
+            "📆 Выбери предмет для задания:",
+            reply_markup=build_subjects_keyboard(),
         )
     elif data == "menu_top":
         await query.message.edit_text(
@@ -577,15 +750,23 @@ async def handle_menu_callback(query: CallbackQuery) -> None:
             "💰 Пополнение баланса (тестовый режим).\n\n"
             "Введи число, на сколько пополнить баланс.\n"
             "Например: <b>100</b>",
-            reply_markup=None,
+            reply_markup=build_main_menu_keyboard(),
+        )
+    elif data == "menu_home":
+        await query.message.edit_text(
+            "📱 Главное меню:",
+            reply_markup=build_main_menu_keyboard(),
         )
 
 
-# ------------------- Хендлеры Telegram -------------------
+# ------------------- Хендлеры Q&A -------------------
+
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     user = message.from_user
+    if not user:
+        return
     display_name = user.full_name or user.username or f"user_{user.id}"
     get_user_state(user.id, display_name=display_name)
 
@@ -601,9 +782,9 @@ async def cmd_start(message: Message) -> None:
         "Команды:\n"
         "• /menu — главное меню 📱\n"
         "• /profile — профиль 📋\n"
-        "• /daily — ежедневные задания 📆\n"
         "• /top — лидерборд 🏆\n"
         "• /paysupport — поддержка платежей 🛟\n\n"
+        "А ещё есть задания по предметам в /menu → «Задания по предметам» 📆\n\n"
         "Просто задай вопрос текстом, голосом или пришли фото задания. 🙂"
     )
     await message.answer(text, reply_markup=build_main_menu_keyboard())
@@ -621,9 +802,9 @@ async def cmd_help(message: Message) -> None:
         "Дополнительно:\n"
         "• /menu — главное меню 📱\n"
         "• /profile — профиль 📋\n"
-        "• /daily — ежедневные задания 📆\n"
         "• /top — лидерборд 🏆\n"
-        "• /paysupport — поддержка платежей 🛟"
+        "• /paysupport — поддержка платежей 🛟\n\n"
+        "Задания по предметам: /menu → «Задания по предметам» 📆"
     )
     await message.answer(text)
 
@@ -658,9 +839,6 @@ async def handle_text(message: Message) -> None:
     if not await ensure_access(message):
         return
 
-    increment_activity(state, kind="text")
-    await maybe_complete_daily(message, state)
-
     user_text = message.text or ""
 
     await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
@@ -683,9 +861,6 @@ async def handle_voice(message: Message) -> None:
 
     if not await ensure_access(message):
         return
-
-    increment_activity(state, kind="voice")
-    await maybe_complete_daily(message, state)
 
     voice = message.voice
     if not voice:
@@ -725,9 +900,6 @@ async def handle_photo(message: Message) -> None:
     if not await ensure_access(message):
         return
 
-    increment_activity(state, kind="photo")
-    await maybe_complete_daily(message, state)
-
     photos = message.photo
     if not photos:
         return
@@ -759,6 +931,7 @@ async def fallback_unknown(message: Message) -> None:
 
 
 # ------------------- Точка входа -------------------
+
 
 async def main():
     logger.info("Бот (aiogram 3) запускается...")
