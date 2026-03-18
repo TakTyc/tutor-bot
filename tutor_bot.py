@@ -3,6 +3,7 @@ import logging
 import os
 from datetime import datetime, timedelta, date, timezone
 from io import BytesIO
+from aiogram.client.default import DefaultBotProperties
 
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
@@ -78,7 +79,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-bot = Bot(token=TELEGRAM_BOT_TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(
+token=TELEGRAM_BOT_TOKEN,
+default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+)
+
 dp = Dispatcher()
 
 
