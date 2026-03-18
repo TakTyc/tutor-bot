@@ -88,9 +88,7 @@ bot = Bot(
 
 dp = Dispatcher()
 
-# ------------------- Вопросы по предметам -------------------
-# Простейший банк вопросов. Можно расширять.
-
+# ------------------- Вопросы по предметам (расширенные) -------------------
 SUBJECT_TASKS = {
     "math": [
         {
@@ -101,6 +99,26 @@ SUBJECT_TASKS = {
         {
             "q": "Математика: корень из 81?",
             "options": ["7", "8", "9", "10"],
+            "answer_index": 2,
+        },
+        {
+            "q": "Математика: сколько будет 15 + 27?",
+            "options": ["32", "42", "52", "62"],
+            "answer_index": 1,
+        },
+        {
+            "q": "Математика: чему равна площадь квадрата со стороной 6 см?",
+            "options": ["24 см²", "30 см²", "36 см²", "42 см²"],
+            "answer_index": 2,
+        },
+        {
+            "q": "Математика: какое число является простым?",
+            "options": ["12", "15", "17", "21"],
+            "answer_index": 2,
+        },
+        {
+            "q": "Математика: 3/4 в виде десятичной дроби — это…",
+            "options": ["0,3", "0,5", "0,75", "0,8"],
             "answer_index": 2,
         },
     ],
@@ -125,6 +143,26 @@ SUBJECT_TASKS = {
             ],
             "answer_index": 2,
         },
+        {
+            "q": "Русский: выбери правильный вариант: «У меня ... книга»",
+            "options": ["интересная", "интереснаяя", "интересное", "интересный"],
+            "answer_index": 0,
+        },
+        {
+            "q": "Русский: в каком слове все согласные твёрдые?",
+            "options": ["чай", "жир", "цирк", "лук"],
+            "answer_index": 3,
+        },
+        {
+            "q": "Русский: определи падеж слова «(вижу) кота»",
+            "options": ["Именительный", "Родительный", "Винительный", "Дательный"],
+            "answer_index": 2,
+        },
+        {
+            "q": "Русский: сколько букв и звуков в слове «солнце»?",
+            "options": ["6 букв, 6 звуков", "6 букв, 5 звуков", "5 букв, 5 звуков", "5 букв, 4 звука"],
+            "answer_index": 1,
+        },
     ],
     "english": [
         {
@@ -142,6 +180,26 @@ SUBJECT_TASKS = {
             "options": ["кошка", "собака", "птица", "рыба"],
             "answer_index": 0,
         },
+        {
+            "q": "English: What is the past tense of 'go'?",
+            "options": ["goed", "went", "gone", "go"],
+            "answer_index": 1,
+        },
+        {
+            "q": "English: Choose the correct article: «... apple a day keeps the doctor away.»",
+            "options": ["a", "an", "the", "-"],
+            "answer_index": 1,
+        },
+        {
+            "q": "English: What is the opposite of 'big'?",
+            "options": ["small", "tall", "short", "large"],
+            "answer_index": 0,
+        },
+        {
+            "q": "English: How do you say 'привет' in English?",
+            "options": ["goodbye", "hello", "hi", "both B and C"],
+            "answer_index": 3,
+        },
     ],
     "physics": [
         {
@@ -152,6 +210,26 @@ SUBJECT_TASKS = {
         {
             "q": "Физика: чему примерно равна ускорение свободного падения g на Земле?",
             "options": ["1 м/с²", "3 м/с²", "9,8 м/с²", "100 м/с²"],
+            "answer_index": 2,
+        },
+        {
+            "q": "Физика: какой прибор измеряет напряжение?",
+            "options": ["Амперметр", "Вольтметр", "Омметр", "Ваттметр"],
+            "answer_index": 1,
+        },
+        {
+            "q": "Физика: в каких единицах измеряется сила тока?",
+            "options": ["Вольты", "Амперы", "Омы", "Ватты"],
+            "answer_index": 1,
+        },
+        {
+            "q": "Физика: какое явление объясняет радугу?",
+            "options": ["Отражение", "Преломление", "Дифракция", "Интерференция"],
+            "answer_index": 1,
+        },
+        {
+            "q": "Физика: что тяжелее — 1 кг ваты или 1 кг гвоздей?",
+            "options": ["вата", "гвозди", "одинаково", "зависит от гравитации"],
             "answer_index": 2,
         },
     ],
@@ -262,6 +340,7 @@ def get_user_state(user_id: int, display_name: str | None = None) -> dict:
             "mode": None,  # режимы ('topup_input' и т.п.)
             "quiz_subject": None,
             "quiz_question_index": None,
+            "last_test_date": None,  # дата последнего получения награды за тест
         }
         user_state[user_id] = state
         return state
@@ -439,6 +518,8 @@ def format_profile(state: dict) -> str:
     today_free_left = max(0, MAX_FREE_PER_DAY - state["free_used_today"])
     sub_active = has_active_subscription(state)
     sub_text = "активна ✅" if sub_active else "нет ❌"
+    # Информация о тесте
+    test_today = "✅ получена" if state.get("last_test_date") == date.today() else "❌ ещё не получал(а)"
     return (
         f"📋 <b>Профиль</b>\n\n"
         f"Имя: {state['display_name']}\n"
@@ -446,6 +527,7 @@ def format_profile(state: dict) -> str:
         f"Опыт: <b>{state['xp']}</b> ⭐️\n"
         f"Бесплатных вопросов сегодня осталось: <b>{today_free_left}</b> 🎁\n"
         f"Подписка: {sub_text}\n"
+        f"Награда за тест сегодня: {test_today}\n"
     )
 
 
@@ -560,6 +642,33 @@ async def handle_topup_callback(query: CallbackQuery) -> None:
     if not user:
         return
 
+    # Обработка кнопки "Назад" из режима ввода
+    if data == "topup_back":
+        # Возвращаем меню выбора суммы
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="50 ⭐️", callback_data="topup_50"),
+                    InlineKeyboardButton(text="100 ⭐️", callback_data="topup_100"),
+                ],
+                [
+                    InlineKeyboardButton(text="200 ⭐️", callback_data="topup_200"),
+                    InlineKeyboardButton(text="500 ⭐️", callback_data="topup_500"),
+                ],
+                [
+                    InlineKeyboardButton(text="💬 Другая сумма", callback_data="topup_custom"),
+                ],
+                [
+                    InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_home"),
+                ],
+            ]
+        )
+        await query.message.edit_text(
+            "💰 Выберите сумму пополнения баланса:",
+            reply_markup=keyboard,
+        )
+        return
+
     if data == "topup_custom":
         # Переходим в режим ввода произвольной суммы
         state = get_user_state(user.id)
@@ -569,7 +678,7 @@ async def handle_topup_callback(query: CallbackQuery) -> None:
             "Например: 150",
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Отмена", callback_data="menu_home")]
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="topup_back")]
                 ]
             ),
         )
@@ -747,15 +856,25 @@ async def handle_quiz_answer(query: CallbackQuery) -> None:
 
     task = tasks[q_idx]
     correct_idx = task["answer_index"]
+    today = date.today()
 
     if ans_idx == correct_idx:
-        state["xp"] += TASK_XP_REWARD
-        state["balance"] += TASK_BALANCE_REWARD
-        text = (
-            "✅ Верно!\n\n"
-            f"+{TASK_XP_REWARD} XP и +{TASK_BALANCE_REWARD} к балансу. 💰\n\n"
-            f"Правильный ответ: {task['options'][correct_idx]}"
-        )
+        # Проверяем, получал ли уже награду сегодня
+        if state.get("last_test_date") != today:
+            state["last_test_date"] = today
+            state["xp"] += TASK_XP_REWARD
+            state["balance"] += TASK_BALANCE_REWARD
+            text = (
+                "✅ Верно! Ты получаешь награду за тест!\n\n"
+                f"+{TASK_XP_REWARD} XP и +{TASK_BALANCE_REWARD} к балансу. 💰\n\n"
+                f"Правильный ответ: {task['options'][correct_idx]}"
+            )
+        else:
+            text = (
+                "✅ Верно, но сегодня ты уже получал(а) награду за тест.\n"
+                "Приходи завтра за новой!\n\n"
+                f"Правильный ответ: {task['options'][correct_idx]}"
+            )
     else:
         text = (
             "❌ Неверно.\n\n"
@@ -877,7 +996,8 @@ async def cmd_start(message: Message) -> None:
         "• /profile — профиль 📋\n"
         "• /top — лидерборд 🏆\n"
         "• /paysupport — поддержка платежей 🛟\n\n"
-        "А ещё есть задания по предметам в /menu → «Задания по предметам» 📆\n\n"
+        "А ещё есть задания по предметам в /menu → «Задания по предметам» 📆\n"
+        "Каждый день можно получить награду за первый правильный ответ! 🎁\n\n"
         "Просто задай вопрос текстом, голосом или пришли фото задания. 🙂"
     )
     await message.answer(text, reply_markup=build_main_menu_keyboard())
@@ -897,7 +1017,8 @@ async def cmd_help(message: Message) -> None:
         "• /profile — профиль 📋\n"
         "• /top — лидерборд 🏆\n"
         "• /paysupport — поддержка платежей 🛟\n\n"
-        "Задания по предметам: /menu → «Задания по предметам» 📆"
+        "Задания по предметам: /menu → «Задания по предметам» 📆\n"
+        "Награда за первый правильный ответ в день."
     )
     await message.answer(text)
 
