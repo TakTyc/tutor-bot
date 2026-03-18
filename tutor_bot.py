@@ -259,7 +259,7 @@ def get_user_state(user_id: int, display_name: str | None = None) -> dict:
             "balance": 0,
             "xp": 0,
             "display_name": display_name or f"user_{user_id}",
-            "mode": None,  # режимы ('topup', 'quiz_answer' и т.п.)
+            "mode": None,  # режимы ('topup_input' и т.п.)
             "quiz_subject": None,
             "quiz_question_index": None,
         }
@@ -501,6 +501,27 @@ async def send_subscription_invoice(message: Message, plan_key: str):
     )
 
 
+async def send_topup_invoice(message: Message, amount: int):
+    """
+    Отправляет инвойс для пополнения баланса на указанную сумму Stars.
+    """
+    prices = [LabeledPrice(label="XTR", amount=amount)]
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"Оплатить {amount} ⭐️", pay=True)]
+        ]
+    )
+    await message.answer_invoice(
+        title="Пополнение баланса",
+        description=f"Пополнение внутреннего баланса на {amount} ⭐️",
+        prices=prices,
+        provider_token="",
+        payload=f"topup_{amount}",
+        currency="XTR",
+        reply_markup=keyboard,
+    )
+
+
 @dp.callback_query(F.data.startswith("sub_"))
 async def handle_subscription_callback(query: CallbackQuery) -> None:
     """
@@ -530,6 +551,48 @@ async def handle_subscription_callback(query: CallbackQuery) -> None:
         await send_subscription_invoice(query.message, plan_key)
 
 
+@dp.callback_query(F.data.startswith("topup_"))
+async def handle_topup_callback(query: CallbackQuery) -> None:
+    """Обработка выбора суммы пополнения."""
+    await query.answer()
+    data = query.data
+    user = query.from_user
+    if not user:
+        return
+
+    if data == "topup_custom":
+        # Переходим в режим ввода произвольной суммы
+        state = get_user_state(user.id)
+        state["mode"] = "topup_input"
+        await query.message.edit_text(
+            "💰 Введите сумму пополнения в звёздах (целое число):\n"
+            "Например: 150",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Отмена", callback_data="menu_home")]
+                ]
+            ),
+        )
+        return
+
+    # Предопределённая сумма
+    try:
+        amount = int(data.split("_")[1])
+    except (IndexError, ValueError):
+        await query.message.edit_text("Ошибка. Попробуйте ещё раз.")
+        return
+
+    if TEST_SUBSCRIPTION_MODE:
+        state = get_user_state(user.id)
+        state["balance"] += amount
+        await query.message.edit_text(
+            f"Баланс пополнен на {amount} (ТЕСТОВЫЙ РЕЖИМ).\n"
+            f"Текущий баланс: {state['balance']} 💰"
+        )
+    else:
+        await send_topup_invoice(query.message, amount)
+
+
 @dp.pre_checkout_query()
 async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery) -> None:
     """Подтверждение платежа."""
@@ -539,7 +602,7 @@ async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery) -> None:
 
 @dp.message(F.successful_payment)
 async def successful_payment_handler(message: Message) -> None:
-    """Успешный платеж → активируем подписку."""
+    """Успешный платеж → активируем подписку или начисляем баланс."""
     user = message.from_user
     if not user:
         return
@@ -563,6 +626,20 @@ async def successful_payment_handler(message: Message) -> None:
             await message.answer(
                 "✅ Оплата прошла успешно, но возникла ошибка активации. Обратитесь в поддержку."
             )
+    elif payload.startswith("topup_"):
+        try:
+            amount = int(payload.replace("topup_", ""))
+        except ValueError:
+            amount = 0
+        if amount > 0:
+            state = get_user_state(user.id)
+            state["balance"] += amount
+            await message.answer(
+                f"✅ Баланс успешно пополнен на {amount} ⭐️!\n"
+                f"Текущий баланс: {state['balance']} 💰"
+            )
+        else:
+            await message.answer("✅ Оплата прошла, но возникла ошибка начисления.")
     else:
         await message.answer("✅ Оплата прошла успешно! Спасибо!")
 
@@ -745,12 +822,28 @@ async def handle_menu_callback(query: CallbackQuery) -> None:
             reply_markup=build_main_menu_keyboard(),
         )
     elif data == "menu_topup":
-        state["mode"] = "topup"
+        # Показываем клавиатуру с вариантами сумм
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="50 ⭐️", callback_data="topup_50"),
+                    InlineKeyboardButton(text="100 ⭐️", callback_data="topup_100"),
+                ],
+                [
+                    InlineKeyboardButton(text="200 ⭐️", callback_data="topup_200"),
+                    InlineKeyboardButton(text="500 ⭐️", callback_data="topup_500"),
+                ],
+                [
+                    InlineKeyboardButton(text="💬 Другая сумма", callback_data="topup_custom"),
+                ],
+                [
+                    InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_home"),
+                ],
+            ]
+        )
         await query.message.edit_text(
-            "💰 Пополнение баланса (тестовый режим).\n\n"
-            "Введи число, на сколько пополнить баланс.\n"
-            "Например: <b>100</b>",
-            reply_markup=build_main_menu_keyboard(),
+            "💰 Выберите сумму пополнения баланса:",
+            reply_markup=keyboard,
         )
     elif data == "menu_home":
         await query.message.edit_text(
@@ -817,22 +910,26 @@ async def handle_text(message: Message) -> None:
     display_name = user.full_name or user.username or f"user_{user.id}"
     state = get_user_state(user.id, display_name=display_name)
 
-    # Режим пополнения баланса
-    if state.get("mode") == "topup":
+    # Режим ввода произвольной суммы для пополнения
+    if state.get("mode") == "topup_input":
         txt = (message.text or "").strip()
         if not txt.isdigit():
-            await message.answer("Пожалуйста, введи целое число. Например: 100 💰")
+            await message.answer("Пожалуйста, введи целое число. Например: 150 💰")
             return
         amount = int(txt)
         if amount <= 0:
             await message.answer("Сумма должна быть положительной. 🙂")
             return
-        state["balance"] += amount
+        # Сбрасываем режим
         state["mode"] = None
-        await message.answer(
-            f"Баланс пополнен на {amount} 💰\n"
-            f"Текущий баланс: {state['balance']} 💰"
-        )
+        if TEST_SUBSCRIPTION_MODE:
+            state["balance"] += amount
+            await message.answer(
+                f"Баланс пополнен на {amount} (ТЕСТОВЫЙ РЕЖИМ).\n"
+                f"Текущий баланс: {state['balance']} 💰"
+            )
+        else:
+            await send_topup_invoice(message, amount)
         return
 
     # Обычный вопрос → проверяем доступ
