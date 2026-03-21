@@ -24,7 +24,7 @@ from aiogram.types import (
 
 from openai import OpenAI
 
-# ------------------- Конфиг -------------------
+# =================== Конфиг ===================
 
 load_dotenv()
 
@@ -51,6 +51,8 @@ TASK_XP_REWARD = 5
 TASK_BALANCE_REWARD = 5
 MAX_HISTORY_PER_USER = 20
 
+ADMIN_IDS = {5418608670}  # сюда можно добавить ещё админов
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -65,7 +67,7 @@ dp = Dispatcher()
 
 db_pool: asyncpg.pool.Pool | None = None
 
-# ------------------- Вопросы по предметам -------------------
+# =================== Вопросы по предметам ===================
 
 SUBJECT_TASKS = {
     "math": [
@@ -130,7 +132,7 @@ SUBJECT_NAMES = {
     "physics": "⚡️ Физика",
 }
 
-# ------------------- Подписки/режимы -------------------
+# =================== Подписки/режимы ===================
 
 SUB_PLANS = {
     "day": {
@@ -295,7 +297,7 @@ def build_exam_subjects_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# ------------------- Работа с БД -------------------
+# =================== БД ===================
 
 async def init_db_pool():
     global db_pool
@@ -324,7 +326,8 @@ async def db_get_user(user_id: int) -> dict | None:
 
 async def db_upsert_user(state: dict):
     async with db_pool.acquire() as conn:
-        await conn.execute("""
+        await conn.execute(
+            """
             INSERT INTO users (user_id, display_name, xp, balance, last_test_date,
                                mode, subscription_expires_at, free_used_today, last_date)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -337,7 +340,7 @@ async def db_upsert_user(state: dict):
                 subscription_expires_at = EXCLUDED.subscription_expires_at,
                 free_used_today = EXCLUDED.free_used_today,
                 last_date = EXCLUDED.last_date;
-        """,
+            """,
             state["user_id"],
             state["display_name"],
             state["xp"],
@@ -353,18 +356,23 @@ async def db_upsert_user(state: dict):
 async def db_get_leaderboard(limit: int = 10) -> list[dict]:
     async with db_pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT user_id, display_name, xp, balance FROM users ORDER BY xp DESC LIMIT $1",
+            "SELECT user_id, display_name, xp, balance FROM users "
+            "ORDER BY xp DESC LIMIT $1",
             limit,
         )
         return [dict(r) for r in rows]
 
 
-# ------------------- Состояние пользователя (БД + память) -------------------
+# =================== Состояние: БД + память ===================
 
 user_history: dict[int, deque[str]] = {}
 exam_state: dict[int, dict] = {}
 saved_items: dict[int, list[tuple[int, str, str]]] = {}
 last_answer: dict[int, tuple[str, str]] = {}
+
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
 
 
 async def get_user_state(user_id: int, display_name: str | None = None) -> dict:
@@ -509,7 +517,7 @@ async def format_leaderboard() -> str:
     return "\n".join(lines)
 
 
-# ------------------- ИИ с режимами -------------------
+# =================== ИИ: текст, аудио, фото ===================
 
 def build_prompt_for_mode(state: dict, user_text: str) -> list[dict]:
     mode = state.get("mode", "short")
@@ -548,66 +556,72 @@ async def ask_ai_text_with_mode(state: dict, prompt: str) -> str:
     return resp.choices[0].message.content
 
 
-# ------------------- Дополнительные функции для голоса и фото -------------------
-
-async def transcribe_audio(file_bytes: bytes, file_name: str = "voice.ogg") -> str:
-    """Распознавание голосового сообщения через Whisper."""
+async def transcribe_audio(data: bytes, file_name: str = "audio.ogg") -> str:
     if not client:
-        return "Голосовое распознавание недоступно (нет API ключа)."
+        return "Извини, распознавание голосовых не настроено (нет API ключа)."
+
+    audio_file = BytesIO(data)
+    audio_file.name = file_name
+
     try:
-        audio_file = BytesIO(file_bytes)
-        audio_file.name = file_name
-        transcription = client.audio.transcriptions.create(
-            model="whisper-1",
+        resp = client.audio.transcriptions.create(
+            model="whisper-1",  # правильная модель Whisper
             file=audio_file,
-            language="ru"
         )
-        return transcription.text
+        text = getattr(resp, "text", None)
+        if not text:
+            text = str(resp)
+        return text
     except Exception as e:
-        logger.exception("Ошибка распознавания голоса: %s", e)
-        return "Не удалось распознать голосовое сообщение."
+        logger.exception("Ошибка при транскрипции аудио: %s", e)
+        return "Не удалось распознать голосовое."
 
 
-async def analyze_image_with_question(photo_bytes: bytes, question: str) -> str:
-    """Анализ изображения через GPT-4o-mini с vision."""
+async def analyze_image_with_question(image_bytes: bytes, question: str) -> str:
     if not client:
-        return "Анализ изображений недоступен (нет API ключа)."
+        return "Извини, анализ изображений не настроен (нет API ключа)."
+
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    data_url = f"data:image/jpeg;base64,{b64}"
+
     try:
-        base64_image = base64.b64encode(photo_bytes).decode('utf-8')
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",  # модель с поддержкой vision
             messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты репетитор. Тебе дают фото задачи и вопрос.\n"
+                        "Опиши, что видно на картинке, и помоги решить задачу, по‑русски."
+                    ),
+                },
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": f"Ты репетитор. Помоги решить задание по этому изображению. Вопрос: {question}"
-                        },
+                        {"type": "text", "text": question},
                         {
                             "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
-                        }
-                    ]
-                }
+                            "image_url": {"url": data_url},
+                        },
+                    ],
+                },
             ],
-            max_tokens=500
         )
-        return response.choices[0].message.content
+        return resp.choices[0].message.content
     except Exception as e:
-        logger.exception("Ошибка анализа изображения: %s", e)
-        return "Не удалось проанализировать изображение."
+        logger.exception("Ошибка при анализе изображения: %s", e)
+        return "Не удалось обработать фото. Попробуй ещё раз или добавь подпись с вопросом."
 
 
-# ------------------- Stars: подписка + пополнение -------------------
+# =================== Stars: подписка + пополнение ===================
 
 async def send_subscription_invoice(message: Message, plan_key: str):
     plan = SUB_PLANS[plan_key]
     prices = [LabeledPrice(label="XTR", amount=plan["stars"])]
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=f"Оплатить {plan['stars']} ⭐️", pay=True)]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"Оплатить {plan['stars']} ⭐️", pay=True)]
+        ]
     )
     await message.answer_invoice(
         title=plan["title"],
@@ -760,7 +774,7 @@ async def pay_support_handler(message: Message) -> None:
     )
 
 
-# ------------------- Задания по предметам -------------------
+# =================== Задания по предметам ===================
 
 @dp.callback_query(F.data == "menu_tasks")
 async def menu_tasks(query: CallbackQuery) -> None:
@@ -790,6 +804,7 @@ async def handle_subject_task(query: CallbackQuery) -> None:
         return
 
     import random
+
     idx = random.randint(0, len(tasks) - 1)
     task = tasks[idx]
 
@@ -885,7 +900,10 @@ async def handle_quiz_answer(query: CallbackQuery) -> None:
     )
 
 
-# ------------------- Экзамен (/exam) -------------------
+# =================== Экзамен (/exam) ===================
+
+EXAM_QUESTIONS_PER_SUBJECT = 5
+
 
 @dp.message(Command("exam"))
 async def cmd_exam(message: Message) -> None:
@@ -893,9 +911,6 @@ async def cmd_exam(message: Message) -> None:
         "📝 Выбери предмет для мини‑экзамена (5 вопросов):",
         reply_markup=build_exam_subjects_keyboard(),
     )
-
-
-EXAM_QUESTIONS_PER_SUBJECT = 5
 
 
 @dp.callback_query(F.data.startswith("exam_"))
@@ -914,6 +929,7 @@ async def handle_exam_subject(query: CallbackQuery) -> None:
         return
 
     import random
+
     total = min(EXAM_QUESTIONS_PER_SUBJECT, len(tasks))
     order = random.sample(range(len(tasks)), total)
 
@@ -942,12 +958,10 @@ async def send_exam_question(message: Message, user_id: int) -> None:
 
     tasks = SUBJECT_TASKS.get(subject_key)
     if pos >= len(order):
-        # экзамен закончен
         correct = state_exam["correct"]
         total = len(order)
 
         user_state_db = await get_user_state(user_id)
-        # Можно наградить XP за экзамен:
         user_state_db["xp"] += correct * 2
         await save_user_state(user_state_db)
 
@@ -1041,7 +1055,7 @@ async def handle_exam_answer(query: CallbackQuery) -> None:
     await send_exam_question(query.message, user.id)
 
 
-# ------------------- /save, /list, /repeat -------------------
+# =================== /save, /list, /repeat ===================
 
 @dp.message(Command("save"))
 async def cmd_save(message: Message) -> None:
@@ -1101,7 +1115,7 @@ async def cmd_repeat(message: Message) -> None:
     await message.answer("Такого номера нет в сохранённых. Посмотри список через /list.")
 
 
-# ------------------- /summary -------------------
+# =================== /summary ===================
 
 @dp.message(Command("summary"))
 async def cmd_summary(message: Message) -> None:
@@ -1119,7 +1133,7 @@ async def cmd_summary(message: Message) -> None:
     await message.answer(text)
 
 
-# ------------------- Меню, профиль, режимы -------------------
+# =================== Меню, профиль, режимы ===================
 
 @dp.message(Command("menu"))
 async def cmd_menu(message: Message) -> None:
@@ -1253,7 +1267,149 @@ async def handle_menu_callback(query: CallbackQuery) -> None:
         )
 
 
-# ------------------- Q&A -------------------
+# =================== Админка ===================
+
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message) -> None:
+    user = message.from_user
+    if not user or not is_admin(user.id):
+        return
+
+    text = (
+        "🛠 Админ‑команды:\n\n"
+        "/admin_top — топ по XP с user_id\n"
+        "/admin_user <user_id> — показать профиль пользователя\n"
+        "/grant_xp <user_id> <xp> — выдать опыт\n"
+        "/grant_balance <user_id> <amount> — выдать баланс\n"
+        "/grant_sub <user_id> <plan> — выдать подписку (day | month | year)\n"
+    )
+    await message.answer(text)
+
+
+@dp.message(Command("admin_top"))
+async def cmd_admin_top(message: Message) -> None:
+    user = message.from_user
+    if not user or not is_admin(user.id):
+        return
+
+    rows = await db_get_leaderboard(limit=20)
+    if not rows:
+        await message.answer("Пока нет данных по пользователям.")
+        return
+
+    lines = ["🏆 <b>Админ‑топ по XP</b>\n"]
+    for idx, row in enumerate(rows, start=1):
+        uid = row["user_id"]
+        name = row.get("display_name") or f"user_{uid}"
+        xp = row.get("xp", 0)
+        balance = row.get("balance", 0)
+        rank = get_rank(xp)
+        lines.append(
+            f"{idx}) {name} (id={uid}) — {xp} XP ({rank}), баланс {balance} 💰"
+        )
+
+    await message.answer("\n".join(lines))
+
+
+@dp.message(Command("admin_user"))
+async def cmd_admin_user(message: Message) -> None:
+    user = message.from_user
+    if not user or not is_admin(user.id):
+        return
+
+    parts = (message.text or "").strip().split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("Используй: /admin_user <user_id>")
+        return
+
+    target_id = int(parts[1])
+    state = await db_get_user(target_id)
+    if not state:
+        await message.answer(f"Пользователь с id={target_id} не найден в БД.")
+        return
+
+    profile_text = format_profile(state)
+    await message.answer(
+        f"📋 Профиль пользователя id={target_id}:\n\n{profile_text}"
+    )
+
+
+@dp.message(Command("grant_xp"))
+async def cmd_grant_xp(message: Message) -> None:
+    user = message.from_user
+    if not user or not is_admin(user.id):
+        return
+
+    parts = (message.text or "").strip().split()
+    if len(parts) < 3 or not parts[1].isdigit() or not parts[2].isdigit():
+        await message.answer("Используй: /grant_xp <user_id> <xp>")
+        return
+
+    target_id = int(parts[1])
+    delta = int(parts[2])
+
+    state = await get_user_state(target_id)
+    state["xp"] = max(0, state.get("xp", 0) + delta)
+    await save_user_state(state)
+
+    await message.answer(
+        f"✅ Пользователю id={target_id} выдано {delta} XP.\n"
+        f"Новый XP: {state['xp']}"
+    )
+
+
+@dp.message(Command("grant_balance"))
+async def cmd_grant_balance(message: Message) -> None:
+    user = message.from_user
+    if not user or not is_admin(user.id):
+        return
+
+    parts = (message.text or "").strip().split()
+    if len(parts) < 3 or not parts[1].isdigit() or not parts[2].isdigit():
+        await message.answer("Используй: /grant_balance <user_id> <amount>")
+        return
+
+    target_id = int(parts[1])
+    delta = int(parts[2])
+
+    state = await get_user_state(target_id)
+    state["balance"] = max(0, state.get("balance", 0) + delta)
+    await save_user_state(state)
+
+    await message.answer(
+        f"✅ Пользователю id={target_id} выдано {delta} к балансу.\n"
+        f"Новый баланс: {state['balance']} 💰"
+    )
+
+
+@dp.message(Command("grant_sub"))
+async def cmd_grant_sub(message: Message) -> None:
+    user = message.from_user
+    if not user or not is_admin(user.id):
+        return
+
+    parts = (message.text or "").strip().split()
+    if len(parts) < 3 or not parts[1].isdigit():
+        await message.answer(
+            "Используй: /grant_sub <user_id> <plan>\nПлан: day | month | year"
+        )
+        return
+
+    target_id = int(parts[1])
+    plan_key = parts[2].strip().lower()
+
+    if plan_key not in SUB_PLANS:
+        await message.answer("Неизвестный план. Используй: day | month | year")
+        return
+
+    new_exp = await add_subscription(target_id, plan_key)
+    await message.answer(
+        f"✅ Пользователю id={target_id} выдана подписка {SUB_PLANS[plan_key]['title']}.\n"
+        f"Действует до: {new_exp.strftime('%Y-%m-%d %H:%M UTC')} 🕒"
+    )
+
+
+# =================== /start, /help, текст, голос, фото ===================
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message) -> None:
@@ -1262,6 +1418,7 @@ async def cmd_start(message: Message) -> None:
         return
     display_name = user.full_name or user.username or f"user_{user.id}"
     await get_user_state(user.id, display_name=display_name)
+
     text = (
         f"Привет, {user.first_name or 'ученик'}! 👋\n\n"
         "Я бот‑репетитор с ИИ 🤖📚\n\n"
@@ -1306,6 +1463,8 @@ async def cmd_help(message: Message) -> None:
         "• /save, /list, /repeat — сохранить и повторять задачи 💾\n"
         "• /paysupport — поддержка платежей 🛟"
     )
+    if message.from_user and is_admin(message.from_user.id):
+        text += "\n\n(Админ: см. /admin для списка админ‑команд.)"
     await message.answer(text)
 
 
@@ -1317,6 +1476,7 @@ async def handle_text(message: Message) -> None:
     display_name = user.full_name or user.username or f"user_{user.id}"
     state = await get_user_state(user.id, display_name=display_name)
 
+    # режим ввода суммы пополнения
     if state.get("mode") == "topup_input":
         txt = (message.text or "").strip()
         if not txt.isdigit():
@@ -1386,6 +1546,7 @@ async def handle_voice(message: Message) -> None:
             f"Ученик сказал голосом: «{recognized_text}». Ответь ему как репетитор.",
         )
         last_answer[user.id] = (recognized_text, answer)
+
         await message.answer(
             f"Я понял из голосового:\n\n«{recognized_text}»\n\nМой ответ:\n{answer}"
         )
@@ -1434,14 +1595,17 @@ async def handle_photo(message: Message) -> None:
         )
 
 
+# =================== Fallback ===================
+
 @dp.message()
 async def fallback_unknown(message: Message) -> None:
     await message.answer(
-        "Извини, я понимаю только команды /start, /help, /menu, /mode, /summary, /exam, /save, /list, /repeat, /paysupport, текст, голосовые и фото. 🙂"
+        "Извини, я понимаю только команды /start, /help, /menu, /mode, /summary, "
+        "/exam, /save, /list, /repeat, /paysupport, /admin и учебные сообщения (текст, голос, фото). 🙂"
     )
 
 
-# ------------------- Точка входа -------------------
+# =================== Точка входа ===================
 
 async def main():
     await init_db_pool()
