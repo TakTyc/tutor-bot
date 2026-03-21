@@ -233,6 +233,9 @@ def build_main_menu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="🎛 Режим объяснения", callback_data="menu_mode"
                 ),
+                InlineKeyboardButton(
+                    text="📝 Экзамен", callback_data="menu_exam"
+                ),
             ],
         ]
     )
@@ -254,6 +257,33 @@ def build_subjects_keyboard() -> InlineKeyboardMarkup:
             ),
             InlineKeyboardButton(
                 text=SUBJECT_NAMES["physics"], callback_data="task_physics"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="⬅️ Назад", callback_data="menu_home"
+            ),
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_exam_subjects_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=SUBJECT_NAMES["math"], callback_data="exam_math"
+            ),
+            InlineKeyboardButton(
+                text=SUBJECT_NAMES["russian"], callback_data="exam_russian"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text=SUBJECT_NAMES["english"], callback_data="exam_english"
+            ),
+            InlineKeyboardButton(
+                text=SUBJECT_NAMES["physics"], callback_data="exam_physics"
             ),
         ],
         [
@@ -329,10 +359,12 @@ async def db_get_leaderboard(limit: int = 10) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-# ------------------- Состояние пользователя (в памяти + БД) -------------------
+# ------------------- Состояние пользователя (БД + память) -------------------
 
-# в памяти держим историю вопросов, чтобы не таскать её в БД
 user_history: dict[int, deque[str]] = {}
+exam_state: dict[int, dict] = {}
+saved_items: dict[int, list[tuple[int, str, str]]] = {}
+last_answer: dict[int, tuple[str, str]] = {}
 
 
 async def get_user_state(user_id: int, display_name: str | None = None) -> dict:
@@ -354,20 +386,20 @@ async def get_user_state(user_id: int, display_name: str | None = None) -> dict:
         await db_upsert_user(state)
     else:
         state = row
-        # обновляем имя, если изменилось
         if display_name and display_name != state.get("display_name"):
             state["display_name"] = display_name
 
-        # сброс лимита, если день поменялся
         last_date = state.get("last_date")
         if not last_date or last_date != today:
             state["free_used_today"] = 0
             state["last_date"] = today
             await db_upsert_user(state)
 
-    # инициализируем историю пользователя
     if user_id not in user_history:
         user_history[user_id] = deque(maxlen=MAX_HISTORY_PER_USER)
+
+    if user_id not in saved_items:
+        saved_items[user_id] = []
 
     return state
 
@@ -397,12 +429,6 @@ async def add_subscription(user_id: int, plan_key: str) -> datetime:
 
     state["subscription_expires_at"] = new_exp
     await save_user_state(state)
-    logger.info(
-        "Подписка %s активирована для %s до %s",
-        plan_key,
-        user_id,
-        new_exp.isoformat(),
-    )
     return new_exp
 
 
@@ -484,7 +510,6 @@ async def format_leaderboard() -> str:
 
 
 # ------------------- ИИ с режимами -------------------
-
 
 def build_prompt_for_mode(state: dict, user_text: str) -> list[dict]:
     mode = state.get("mode", "short")
@@ -576,7 +601,7 @@ async def analyze_image_with_question(photo_bytes: bytes, question: str) -> str:
         return "Не удалось проанализировать изображение."
 
 
-# =================== Оплата Stars (подписка + пополнение) ===================
+# ------------------- Stars: подписка + пополнение -------------------
 
 async def send_subscription_invoice(message: Message, plan_key: str):
     plan = SUB_PLANS[plan_key]
@@ -860,6 +885,240 @@ async def handle_quiz_answer(query: CallbackQuery) -> None:
     )
 
 
+# ------------------- Экзамен (/exam) -------------------
+
+@dp.message(Command("exam"))
+async def cmd_exam(message: Message) -> None:
+    await message.answer(
+        "📝 Выбери предмет для мини‑экзамена (5 вопросов):",
+        reply_markup=build_exam_subjects_keyboard(),
+    )
+
+
+EXAM_QUESTIONS_PER_SUBJECT = 5
+
+
+@dp.callback_query(F.data.startswith("exam_"))
+async def handle_exam_subject(query: CallbackQuery) -> None:
+    await query.answer()
+    user = query.from_user
+    if not user:
+        return
+    subject_key = query.data.replace("exam_", "")
+    tasks = SUBJECT_TASKS.get(subject_key)
+    if not tasks:
+        await query.message.edit_text(
+            "Для этого предмета пока нет заданий. 😕",
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return
+
+    import random
+    total = min(EXAM_QUESTIONS_PER_SUBJECT, len(tasks))
+    order = random.sample(range(len(tasks)), total)
+
+    exam_state[user.id] = {
+        "subject": subject_key,
+        "order": order,
+        "pos": 0,
+        "correct": 0,
+    }
+
+    await send_exam_question(query.message, user.id)
+
+
+async def send_exam_question(message: Message, user_id: int) -> None:
+    state_exam = exam_state.get(user_id)
+    if not state_exam:
+        await message.edit_text(
+            "Экзамен не найден. Начни заново командой /exam.",
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return
+
+    subject_key = state_exam["subject"]
+    order = state_exam["order"]
+    pos = state_exam["pos"]
+
+    tasks = SUBJECT_TASKS.get(subject_key)
+    if pos >= len(order):
+        # экзамен закончен
+        correct = state_exam["correct"]
+        total = len(order)
+
+        user_state_db = await get_user_state(user_id)
+        # Можно наградить XP за экзамен:
+        user_state_db["xp"] += correct * 2
+        await save_user_state(user_state_db)
+
+        if correct >= total - 1:
+            text = (
+                f"🎉 Экзамен по {SUBJECT_NAMES[subject_key]} завершён!\n\n"
+                f"Ты ответил(а) правильно на {correct} из {total} вопросов.\n"
+                "Отличный результат! 💪"
+            )
+        elif correct >= total // 2:
+            text = (
+                f"Экзамен по {SUBJECT_NAMES[subject_key]} завершён.\n\n"
+                f"Правильных ответов: {correct} из {total}.\n"
+                "Неплохо, но есть, что повторить. 🙂"
+            )
+        else:
+            text = (
+                f"Экзамен по {SUBJECT_NAMES[subject_key]} завершён.\n\n"
+                f"Правильных ответов: {correct} из {total}.\n"
+                "Ничего страшного, попробуй ещё раз после повторения темы. 🙂"
+            )
+
+        await message.edit_text(text, reply_markup=build_main_menu_keyboard())
+        exam_state.pop(user_id, None)
+        return
+
+    idx = order[pos]
+    task = SUBJECT_TASKS[subject_key][idx]
+    options = task["options"]
+
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text=f"{i+1}. {opt}",
+                callback_data=f"examans_{subject_key}_{idx}_{i}",
+            )
+        ]
+        for i, opt in enumerate(options)
+    ]
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    await message.edit_text(
+        f"Экзамен по {SUBJECT_NAMES[subject_key]} ({pos+1}/{len(order)})\n\n{task['q']}",
+        reply_markup=kb,
+    )
+
+
+@dp.callback_query(F.data.startswith("examans_"))
+async def handle_exam_answer(query: CallbackQuery) -> None:
+    await query.answer()
+    user = query.from_user
+    if not user:
+        return
+    data = query.data
+    try:
+        _, subject_key, q_idx_str, ans_idx_str = data.split("_", 3)
+        q_idx = int(q_idx_str)
+        ans_idx = int(ans_idx_str)
+    except Exception:
+        await query.message.edit_text(
+            "Ошибка разбора ответа. Попробуй снова /exam.",
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return
+
+    state_exam = exam_state.get(user.id)
+    if not state_exam or state_exam["subject"] != subject_key:
+        await query.message.edit_text(
+            "Экзамен неактивен. Начни снова /exam.",
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return
+
+    tasks = SUBJECT_TASKS.get(subject_key)
+    if not tasks or not (0 <= q_idx < len(tasks)):
+        await query.message.edit_text(
+            "Вопрос не найден. Попробуй ещё раз.",
+            reply_markup=build_main_menu_keyboard(),
+        )
+        return
+
+    task = tasks[q_idx]
+    correct_idx = task["answer_index"]
+
+    if ans_idx == correct_idx:
+        state_exam["correct"] += 1
+
+    state_exam["pos"] += 1
+    exam_state[user.id] = state_exam
+
+    await send_exam_question(query.message, user.id)
+
+
+# ------------------- /save, /list, /repeat -------------------
+
+@dp.message(Command("save"))
+async def cmd_save(message: Message) -> None:
+    user = message.from_user
+    if not user:
+        return
+    last = last_answer.get(user.id)
+    if not last:
+        await message.answer("Пока нечего сохранять. Сначала задай вопрос и получи ответ. 🙂")
+        return
+
+    q, a = last
+    items = saved_items.setdefault(user.id, [])
+    new_id = len(items) + 1
+    items.append((new_id, q, a))
+    await message.answer(f"✅ Объяснение сохранено под номером {new_id}.")
+
+
+@dp.message(Command("list"))
+async def cmd_list(message: Message) -> None:
+    user = message.from_user
+    if not user:
+        return
+    items = saved_items.get(user.id, [])
+    if not items:
+        await message.answer("У тебя пока нет сохранённых задач. Используй /save после ответа.")
+        return
+
+    text = "📚 Сохранённые задачи/объяснения:\n\n"
+    for idx, (item_id, q, _) in enumerate(items, start=1):
+        short_q = q
+        if len(short_q) > 50:
+            short_q = short_q[:47] + "..."
+        text += f"{item_id}) {short_q}\n"
+    text += "\nЧтобы повторить, напиши: /repeat НОМЕР (например, /repeat 1)."
+
+    await message.answer(text)
+
+
+@dp.message(Command("repeat"))
+async def cmd_repeat(message: Message) -> None:
+    user = message.from_user
+    if not user:
+        return
+    parts = (message.text or "").strip().split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("Используй: /repeat НОМЕР (например, /repeat 1).")
+        return
+    num = int(parts[1])
+
+    items = saved_items.get(user.id, [])
+    for item_id, q, a in items:
+        if item_id == num:
+            await message.answer(f"❓ Вопрос:\n{q}\n\n💡 Объяснение:\n{a}")
+            return
+
+    await message.answer("Такого номера нет в сохранённых. Посмотри список через /list.")
+
+
+# ------------------- /summary -------------------
+
+@dp.message(Command("summary"))
+async def cmd_summary(message: Message) -> None:
+    user = message.from_user
+    if not user:
+        return
+    history = user_history.get(user.id)
+    if not history:
+        await message.answer("Пока нет вопросов для конспекта. Задай мне что‑нибудь. 🙂")
+        return
+
+    text = "📝 Краткий конспект твоих последних вопросов:\n\n"
+    for i, q in enumerate(history, start=1):
+        text += f"{i}) {q}\n"
+    await message.answer(text)
+
+
 # ------------------- Меню, профиль, режимы -------------------
 
 @dp.message(Command("menu"))
@@ -888,9 +1147,7 @@ async def cmd_mode(message: Message) -> None:
     user = message.from_user
     if not user:
         return
-    await message.answer(
-        "Выбери режим объяснения:", reply_markup=build_mode_keyboard()
-    )
+    await message.answer("Выбери режим объяснения:", reply_markup=build_mode_keyboard())
 
 
 @dp.callback_query(F.data.startswith("mode_"))
@@ -984,29 +1241,16 @@ async def handle_menu_callback(query: CallbackQuery) -> None:
             "Выбери режим объяснения:",
             reply_markup=build_mode_keyboard(),
         )
+    elif data == "menu_exam":
+        await query.message.edit_text(
+            "📝 Выбери предмет для мини‑экзамена:",
+            reply_markup=build_exam_subjects_keyboard(),
+        )
     elif data == "menu_home":
         await query.message.edit_text(
             "📱 Главное меню:",
             reply_markup=build_main_menu_keyboard(),
         )
-
-
-# ------------------- /summary -------------------
-
-@dp.message(Command("summary"))
-async def cmd_summary(message: Message) -> None:
-    user = message.from_user
-    if not user:
-        return
-    history = user_history.get(user.id)
-    if not history:
-        await message.answer("Пока нет вопросов для конспекта. Задай мне что‑нибудь. 🙂")
-        return
-
-    text = "📝 Краткий конспект твоих последних вопросов:\n\n"
-    for i, q in enumerate(history, start=1):
-        text += f"{i}) {q}\n"
-    await message.answer(text)
 
 
 # ------------------- Q&A -------------------
@@ -1018,7 +1262,6 @@ async def cmd_start(message: Message) -> None:
         return
     display_name = user.full_name or user.username or f"user_{user.id}"
     await get_user_state(user.id, display_name=display_name)
-
     text = (
         f"Привет, {user.first_name or 'ученик'}! 👋\n\n"
         "Я бот‑репетитор с ИИ 🤖📚\n\n"
@@ -1034,6 +1277,8 @@ async def cmd_start(message: Message) -> None:
         "• /top — лидерборд 🏆\n"
         "• /mode — режим объяснения 🎛\n"
         "• /summary — конспект 📝\n"
+        "• /exam — мини‑экзамен 📝\n"
+        "• /save, /list, /repeat — сохранить и повторять задачи 💾\n"
         "• /paysupport — поддержка платежей 🛟\n\n"
         "А ещё есть задания по предметам в /menu → «Задания по предметам» 📆\n"
         "Каждый день можно получить награду за тест! 🎁\n\n"
@@ -1057,8 +1302,9 @@ async def cmd_help(message: Message) -> None:
         "• /top — лидерборд 🏆\n"
         "• /mode — режим объяснения 🎛\n"
         "• /summary — конспект 📝\n"
-        "• /paysupport — поддержка платежей 🛟\n\n"
-        "Задания по предметам: /menu → «Задания по предметам» 📆"
+        "• /exam — мини‑экзамен 📝\n"
+        "• /save, /list, /repeat — сохранить и повторять задачи 💾\n"
+        "• /paysupport — поддержка платежей 🛟"
     )
     await message.answer(text)
 
@@ -1071,7 +1317,6 @@ async def handle_text(message: Message) -> None:
     display_name = user.full_name or user.username or f"user_{user.id}"
     state = await get_user_state(user.id, display_name=display_name)
 
-    # Режим ввода суммы пополнения
     if state.get("mode") == "topup_input":
         txt = (message.text or "").strip()
         if not txt.isdigit():
@@ -1103,6 +1348,7 @@ async def handle_text(message: Message) -> None:
     await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
     try:
         answer = await ask_ai_text_with_mode(state, user_text)
+        last_answer[user.id] = (user_text, answer)
     except Exception as e:
         logger.exception("Ошибка при запросе к OpenAI (текст): %s", e)
         answer = "Что-то пошло не так с ИИ. Попробуй ещё раз позже. 😔"
@@ -1139,7 +1385,7 @@ async def handle_voice(message: Message) -> None:
             state,
             f"Ученик сказал голосом: «{recognized_text}». Ответь ему как репетитор.",
         )
-
+        last_answer[user.id] = (recognized_text, answer)
         await message.answer(
             f"Я понял из голосового:\n\n«{recognized_text}»\n\nМой ответ:\n{answer}"
         )
@@ -1178,6 +1424,8 @@ async def handle_photo(message: Message) -> None:
         user_history[user.id].append(f"[photo] {question}")
 
         answer = await analyze_image_with_question(file_bytes, question)
+        last_answer[user.id] = (question, answer)
+
         await message.answer(answer)
     except Exception as e:
         logger.exception("Ошибка при обработке фото: %s", e)
@@ -1189,7 +1437,7 @@ async def handle_photo(message: Message) -> None:
 @dp.message()
 async def fallback_unknown(message: Message) -> None:
     await message.answer(
-        "Извини, я понимаю только команды /start, /help, /menu, /mode, /summary, /paysupport, текст, голосовые и фото. 🙂"
+        "Извини, я понимаю только команды /start, /help, /menu, /mode, /summary, /exam, /save, /list, /repeat, /paysupport, текст, голосовые и фото. 🙂"
     )
 
 
