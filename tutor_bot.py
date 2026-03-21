@@ -82,7 +82,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 
 bot = Bot(
     token=TELEGRAM_BOT_TOKEN,
@@ -158,6 +158,7 @@ SUBJECT_TASKS = {
         },
     ],
 }
+
 SUBJECT_NAMES = {
     "math": "📐 Математика",
     "russian": "📚 Русский",
@@ -220,7 +221,7 @@ def get_user_state(user_id: int, display_name: str | None = None) -> dict:
             "mode": "short",  # short / detailed / simple
             "quiz_subject": None,
             "quiz_question_index": None,
-            "history": deque(maxlen=MAX_HISTORY_PER_USER),  # список строк вопросов
+            "history": deque(maxlen=MAX_HISTORY_PER_USER),
         }
         user_state[user_id] = state
         return state
@@ -286,7 +287,9 @@ def build_subscription_keyboard() -> InlineKeyboardMarkup:
             ],
         ]
     )
-    def build_main_menu_keyboard() -> InlineKeyboardMarkup:
+
+
+def build_main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -418,7 +421,9 @@ def mode_label(mode: str) -> str:
     if mode == "simple":
         return "🙂 Простым языком"
     return "⚡️ Коротко"
-    def format_leaderboard() -> str:
+
+
+def format_leaderboard() -> str:
     if not user_state:
         return "🏆 Пока нет данных для лидерборда."
 
@@ -441,10 +446,6 @@ def mode_label(mode: str) -> str:
 async def send_subscription_invoice(message: Message, plan_key: str):
     """
     Отправляет инвойс для оплаты подписки Stars.
-    Для Stars:
-    - provider_token = ""
-    - currency = "XTR"
-    - prices = [LabeledPrice(label="XTR", amount=цена)]
     """
     plan = SUB_PLANS[plan_key]
     prices = [LabeledPrice(label="XTR", amount=plan["stars"])]
@@ -463,7 +464,7 @@ async def send_subscription_invoice(message: Message, plan_key: str):
         title=plan["title"],
         description=f"Оформление подписки: {plan['title'].lower()}",
         prices=prices,
-        provider_token="",  # пустая строка для Stars
+        provider_token="",
         payload=f"subscription_{plan_key}",
         currency="XTR",
         reply_markup=keyboard,
@@ -540,6 +541,8 @@ async def pay_support_handler(message: Message) -> None:
 
 
 # ------------------- Задания по предметам -------------------
+
+
 @dp.callback_query(F.data == "menu_tasks")
 async def menu_tasks(query: CallbackQuery) -> None:
     await query.answer()
@@ -572,7 +575,7 @@ async def handle_subject_task(query: CallbackQuery) -> None:
     idx = random.randint(0, len(tasks) - 1)
     task = tasks[idx]
 
-    state["mode"] = state.get("mode", "short")  # не меняем
+    state["mode"] = state.get("mode", "short")
     state["quiz_subject"] = subject_key
     state["quiz_question_index"] = idx
 
@@ -675,6 +678,8 @@ async def cmd_profile(message: Message) -> None:
 @dp.message(Command("top"))
 async def cmd_top(message: Message) -> None:
     await message.answer(format_leaderboard())
+
+
 @dp.message(Command("mode"))
 async def cmd_mode(message: Message) -> None:
     user = message.from_user
@@ -734,7 +739,7 @@ async def handle_menu_callback(query: CallbackQuery) -> None:
             reply_markup=build_main_menu_keyboard(),
         )
     elif data == "menu_topup":
-        state["mode"] = "topup"  # временно для ввода суммы
+        state["mode"] = "topup"
         await query.message.edit_text(
             "💰 Пополнение баланса (тестовый режим).\n\n"
             "Введи число, на сколько пополнить баланс.\n"
@@ -784,7 +789,8 @@ async def cmd_start(message: Message) -> None:
         return
     display_name = user.full_name or user.username or f"user_{user.id}"
     state = get_user_state(user.id, display_name=display_name)
-text = (
+
+    text = (
         f"Привет, {user.first_name or 'ученик'}! 👋\n\n"
         "Я бот‑репетитор с ИИ 🤖📚\n\n"
         "Я умею:\n"
@@ -873,7 +879,6 @@ async def transcribe_audio(file_bytes: bytes, file_name: str = "voice.ogg") -> s
         return "Голосовое распознавание временно недоступно."
     
     try:
-        from io import BytesIO
         audio_file = BytesIO(file_bytes)
         audio_file.name = file_name
         
@@ -886,14 +891,15 @@ async def transcribe_audio(file_bytes: bytes, file_name: str = "voice.ogg") -> s
     except Exception as e:
         logger.exception("Ошибка при распознавании голоса: %s", e)
         return "Не удалось распознать голосовое сообщение."
-        async def analyze_image_with_question(photo_bytes: bytes, question: str) -> str:
+
+
+async def analyze_image_with_question(photo_bytes: bytes, question: str) -> str:
     """Функция для анализа изображения с вопросом"""
     if not client:
         return "Анализ изображений временно недоступен."
     
     try:
         import base64
-        from io import BytesIO
         
         base64_image = base64.b64encode(photo_bytes).decode('utf-8')
         
@@ -1001,5 +1007,69 @@ async def handle_voice(message: Message) -> None:
             f"Ученик сказал голосом: «{recognized_text}». Ответь ему как репетитор.",
         )
 
-        await message.answer
-        
+        await message.answer(
+            f"Я понял из голосового:\n\n«{recognized_text}»\n\nМой ответ:\n{answer}"
+        )
+    except Exception as e:
+        logger.exception("Ошибка при обработке голосового: %s", e)
+        await message.answer(
+            "Не получилось обработать голосовое. Попробуй ещё раз или напиши текстом. 😔"
+        )
+
+
+@dp.message(F.photo)
+async def handle_photo(message: Message) -> None:
+    user = message.from_user
+    if not user:
+        return
+    display_name = user.full_name or user.username or f"user_{user.id}"
+    state = get_user_state(user.id, display_name=display_name)
+
+    if not await ensure_access(message):
+        return
+
+    photos = message.photo
+    if not photos:
+        return
+
+    await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    photo = photos[-1]
+    try:
+        file = await bot.get_file(photo.file_id)
+        file_data = await bot.download_file(file.file_path)
+        file_bytes = file_data.read()
+
+        caption = message.caption or ""
+        question = caption.strip() or "Помоги разобрать это задание по фото."
+
+        # Сохраняем в историю
+        state["history"].append(f"[photo] {question}")
+
+        answer = await analyze_image_with_question(file_bytes, question)
+    except Exception as e:
+        logger.exception("Ошибка при обработке фото: %s", e)
+        await message.answer(
+            "Не удалось обработать фото. Попробуй ещё раз или добавь подпись с вопросом. 😔"
+        )
+        return
+
+    await message.answer(answer)
+
+
+@dp.message()
+async def fallback_unknown(message: Message) -> None:
+    await message.answer(
+        "Извини, я понимаю только команды /start, /help, /menu, /mode, /summary, /paysupport, текст, голосовые и фото. 🙂"
+    )
+
+
+# ------------------- Точка входа -------------------
+
+
+async def main():
+    logger.info("Бот (aiogram 3) запускается...")
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
