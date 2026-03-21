@@ -759,7 +759,7 @@ async def pay_support_handler(message: Message) -> None:
     await message.answer(
         "🛟 Поддержка платежей\n\n"
         "По вопросам возврата средств и проблем с оплатой обращайтесь:\n"
-        "• Напишите @your_support_username\n\n"
+        "• Напишите @Suppor_Tutor_bot\n\n"
         "Возврат средств возможен в течение 7 дней после покупки при наличии технических проблем."
     )
 
