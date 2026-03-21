@@ -3,6 +3,7 @@ import logging
 import os
 from datetime import datetime, timedelta, date, timezone
 from io import BytesIO
+from collections import deque
 
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
@@ -18,7 +19,6 @@ from aiogram.types import (
     PreCheckoutQuery,
     SuccessfulPayment,
 )
-
 from openai import OpenAI
 
 # ------------------- Конфиг -------------------
@@ -75,11 +75,14 @@ MAX_FREE_PER_DAY = 5
 TASK_XP_REWARD = 5
 TASK_BALANCE_REWARD = 5
 
+# История вопросов для /summary
+MAX_HISTORY_PER_USER = 20
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(name)
 
 bot = Bot(
     token=TELEGRAM_BOT_TOKEN,
@@ -88,7 +91,8 @@ bot = Bot(
 
 dp = Dispatcher()
 
-# ------------------- Вопросы по предметам (расширенные) -------------------
+# ------------------- Вопросы по предметам -------------------
+
 SUBJECT_TASKS = {
     "math": [
         {
@@ -97,34 +101,14 @@ SUBJECT_TASKS = {
             "answer_index": 2,
         },
         {
-            "q": "Математика: корень из 81?",
+            "q": "Математика: чему равно √81?",
             "options": ["7", "8", "9", "10"],
-            "answer_index": 2,
-        },
-        {
-            "q": "Математика: сколько будет 15 + 27?",
-            "options": ["32", "42", "52", "62"],
-            "answer_index": 1,
-        },
-        {
-            "q": "Математика: чему равна площадь квадрата со стороной 6 см?",
-            "options": ["24 см²", "30 см²", "36 см²", "42 см²"],
-            "answer_index": 2,
-        },
-        {
-            "q": "Математика: какое число является простым?",
-            "options": ["12", "15", "17", "21"],
-            "answer_index": 2,
-        },
-        {
-            "q": "Математика: 3/4 в виде десятичной дроби — это…",
-            "options": ["0,3", "0,5", "0,75", "0,8"],
             "answer_index": 2,
         },
     ],
     "russian": [
         {
-            "q": "Русский: где слово с НЕ пишется СЛИТНО?",
+            "q": "Русский: где слово с НЕ пишется слитно?",
             "options": [
                 "не рад",
                 "неправда",
@@ -143,26 +127,6 @@ SUBJECT_TASKS = {
             ],
             "answer_index": 2,
         },
-        {
-            "q": "Русский: выбери правильный вариант: «У меня ... книга»",
-            "options": ["интересная", "интереснаяя", "интересное", "интересный"],
-            "answer_index": 0,
-        },
-        {
-            "q": "Русский: в каком слове все согласные твёрдые?",
-            "options": ["чай", "жир", "цирк", "лук"],
-            "answer_index": 3,
-        },
-        {
-            "q": "Русский: определи падеж слова «(вижу) кота»",
-            "options": ["Именительный", "Родительный", "Винительный", "Дательный"],
-            "answer_index": 2,
-        },
-        {
-            "q": "Русский: сколько букв и звуков в слове «солнце»?",
-            "options": ["6 букв, 6 звуков", "6 букв, 5 звуков", "5 букв, 5 звуков", "5 букв, 4 звука"],
-            "answer_index": 1,
-        },
     ],
     "english": [
         {
@@ -180,26 +144,6 @@ SUBJECT_TASKS = {
             "options": ["кошка", "собака", "птица", "рыба"],
             "answer_index": 0,
         },
-        {
-            "q": "English: What is the past tense of 'go'?",
-            "options": ["goed", "went", "gone", "go"],
-            "answer_index": 1,
-        },
-        {
-            "q": "English: Choose the correct article: «... apple a day keeps the doctor away.»",
-            "options": ["a", "an", "the", "-"],
-            "answer_index": 1,
-        },
-        {
-            "q": "English: What is the opposite of 'big'?",
-            "options": ["small", "tall", "short", "large"],
-            "answer_index": 0,
-        },
-        {
-            "q": "English: How do you say 'привет' in English?",
-            "options": ["goodbye", "hello", "hi", "both B and C"],
-            "answer_index": 3,
-        },
     ],
     "physics": [
         {
@@ -208,33 +152,12 @@ SUBJECT_TASKS = {
             "answer_index": 1,
         },
         {
-            "q": "Физика: чему примерно равна ускорение свободного падения g на Земле?",
+            "q": "Физика: чему примерно равно ускорение свободного падения g?",
             "options": ["1 м/с²", "3 м/с²", "9,8 м/с²", "100 м/с²"],
-            "answer_index": 2,
-        },
-        {
-            "q": "Физика: какой прибор измеряет напряжение?",
-            "options": ["Амперметр", "Вольтметр", "Омметр", "Ваттметр"],
-            "answer_index": 1,
-        },
-        {
-            "q": "Физика: в каких единицах измеряется сила тока?",
-            "options": ["Вольты", "Амперы", "Омы", "Ватты"],
-            "answer_index": 1,
-        },
-        {
-            "q": "Физика: какое явление объясняет радугу?",
-            "options": ["Отражение", "Преломление", "Дифракция", "Интерференция"],
-            "answer_index": 1,
-        },
-        {
-            "q": "Физика: что тяжелее — 1 кг ваты или 1 кг гвоздей?",
-            "options": ["вата", "гвозди", "одинаково", "зависит от гравитации"],
             "answer_index": 2,
         },
     ],
 }
-
 SUBJECT_NAMES = {
     "math": "📐 Математика",
     "russian": "📚 Русский",
@@ -242,85 +165,42 @@ SUBJECT_NAMES = {
     "physics": "⚡️ Физика",
 }
 
-# ------------------- Вспомогательные для ИИ -------------------
+# ------------------- Ранги и режимы объяснения -------------------
 
 
-async def ask_ai_text(prompt: str, system_prompt: str | None = None) -> str:
-    """Текстовый запрос к ИИ (репетитор)."""
-    if not client:
-        return "Извини, ИИ-часть ещё не настроена (нет API ключа)."
-
-    if system_prompt is None:
-        system_prompt = (
-            "Ты доброжелательный и понятный репетитор для школьников. "
-            "Объясняй простым языком, по шагам, по-русски."
-        )
-
-    resp = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.4,
-    )
-    return resp.choices[0].message.content
+def get_rank(xp: int) -> str:
+    if xp < 50:
+        return "Новичок"
+    if xp < 200:
+        return "Стажёр учёного"
+    if xp < 500:
+        return "Юный академик"
+    return "Профессор"
 
 
-async def transcribe_audio(file_bytes: bytes, file_name: str = "audio.ogg") -> str:
-    """Распознавание речи."""
-    if not client:
-        return "Извини, распознавание речи ещё не настроено (нет API ключа)."
-
-    audio_file = BytesIO(file_bytes)
-    audio_file.name = file_name
-
-    transcription = client.audio.transcriptions.create(
-        model="gpt-4o-mini-transcribe",
-        file=audio_file,
-        response_format="text",
-    )
-    return transcription
-
-
-async def analyze_image_with_question(image_bytes: bytes, question: str) -> str:
-    """Анализ изображения + вопрос к нему (фото задачи)."""
-    if not client:
-        return "Извини, анализ изображений ещё не настроен (нет API ключа)."
-
-    import base64
-
-    b64 = base64.b64encode(image_bytes).decode("utf-8")
-    img_data_url = f"data:image/jpeg;base64,{b64}"
-
-    resp = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Ты репетитор, который помогает по учебным заданиям. "
-                    "Смотри на картинку (например, фото из тетради или задачи) "
-                    "и помоги решить или объяснить."
+def build_mode_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⚡️ Коротко", callback_data="mode_short"
                 ),
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": question or "Посмотри на изображение и объясни, что на нём.",
-                    },
-                    {
-                        "type": "input_image",
-                        "image_url": {"url": img_data_url},
-                    },
-                ],
-            },
-        ],
-        temperature=0.4,
+                InlineKeyboardButton(
+                    text="📚 Подробно", callback_data="mode_detailed"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🙂 Простым языком", callback_data="mode_simple"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🏠 Главное меню", callback_data="menu_home"
+                )
+            ],
+        ]
     )
-    return resp.choices[0].message.content
 
 
 # ------------------- Состояние пользователя -------------------
@@ -337,10 +217,10 @@ def get_user_state(user_id: int, display_name: str | None = None) -> dict:
             "balance": 0,
             "xp": 0,
             "display_name": display_name or f"user_{user_id}",
-            "mode": None,  # режимы ('topup_input' и т.п.)
+            "mode": "short",  # short / detailed / simple
             "quiz_subject": None,
             "quiz_question_index": None,
-            "last_test_date": None,  # дата последнего получения награды за тест
+            "history": deque(maxlen=MAX_HISTORY_PER_USER),  # список строк вопросов
         }
         user_state[user_id] = state
         return state
@@ -351,6 +231,9 @@ def get_user_state(user_id: int, display_name: str | None = None) -> dict:
 
     if display_name:
         state["display_name"] = display_name
+
+    if "history" not in state:
+        state["history"] = deque(maxlen=MAX_HISTORY_PER_USER)
 
     return state
 
@@ -403,9 +286,7 @@ def build_subscription_keyboard() -> InlineKeyboardMarkup:
             ],
         ]
     )
-
-
-def build_main_menu_keyboard() -> InlineKeyboardMarkup:
+    def build_main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -426,7 +307,7 @@ def build_main_menu_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="🏠 Главное меню", callback_data="menu_home"
+                    text="🎛 Режим объяснения", callback_data="menu_mode"
                 ),
             ],
         ]
@@ -511,27 +392,33 @@ async def ensure_access(message: Message) -> bool:
     return False
 
 
-# ------------------- Профиль и лидерборд -------------------
+# ------------------- Профиль, ранги и лидерборд -------------------
 
 
 def format_profile(state: dict) -> str:
     today_free_left = max(0, MAX_FREE_PER_DAY - state["free_used_today"])
     sub_active = has_active_subscription(state)
     sub_text = "активна ✅" if sub_active else "нет ❌"
-    # Информация о тесте
-    test_today = "✅ получена" if state.get("last_test_date") == date.today() else "❌ ещё не получал(а)"
+    rank = get_rank(state["xp"])
     return (
         f"📋 <b>Профиль</b>\n\n"
         f"Имя: {state['display_name']}\n"
+        f"Ранг: <b>{rank}</b>\n"
         f"Баланс: <b>{state['balance']}</b> 💰\n"
         f"Опыт: <b>{state['xp']}</b> ⭐️\n"
         f"Бесплатных вопросов сегодня осталось: <b>{today_free_left}</b> 🎁\n"
         f"Подписка: {sub_text}\n"
-        f"Награда за тест сегодня: {test_today}\n"
+        f"Режим объяснения: {mode_label(state.get('mode', 'short'))}\n"
     )
 
 
-def format_leaderboard() -> str:
+def mode_label(mode: str) -> str:
+    if mode == "detailed":
+        return "📚 Подробно"
+    if mode == "simple":
+        return "🙂 Простым языком"
+    return "⚡️ Коротко"
+    def format_leaderboard() -> str:
     if not user_state:
         return "🏆 Пока нет данных для лидерборда."
 
@@ -543,7 +430,8 @@ def format_leaderboard() -> str:
         name = state.get("display_name", f"user_{uid}")
         xp = state.get("xp", 0)
         balance = state.get("balance", 0)
-        lines.append(f"{idx}) {name} — {xp} XP, баланс {balance} 💰")
+        rank = get_rank(xp)
+        lines.append(f"{idx}) {name} — {xp} XP ({rank}), баланс {balance} 💰")
     return "\n".join(lines)
 
 
@@ -559,7 +447,6 @@ async def send_subscription_invoice(message: Message, plan_key: str):
     - prices = [LabeledPrice(label="XTR", amount=цена)]
     """
     plan = SUB_PLANS[plan_key]
-
     prices = [LabeledPrice(label="XTR", amount=plan["stars"])]
 
     keyboard = InlineKeyboardMarkup(
@@ -583,34 +470,8 @@ async def send_subscription_invoice(message: Message, plan_key: str):
     )
 
 
-async def send_topup_invoice(message: Message, amount: int):
-    """
-    Отправляет инвойс для пополнения баланса на указанную сумму Stars.
-    """
-    prices = [LabeledPrice(label="XTR", amount=amount)]
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=f"Оплатить {amount} ⭐️", pay=True)]
-        ]
-    )
-    await message.answer_invoice(
-        title="Пополнение баланса",
-        description=f"Пополнение внутреннего баланса на {amount} ⭐️",
-        prices=prices,
-        provider_token="",
-        payload=f"topup_{amount}",
-        currency="XTR",
-        reply_markup=keyboard,
-    )
-
-
 @dp.callback_query(F.data.startswith("sub_"))
 async def handle_subscription_callback(query: CallbackQuery) -> None:
-    """
-    Нажатие на кнопки подписки.
-    Тестовый режим — без оплаты.
-    Продакшен — через Stars.
-    """
     await query.answer()
     data = query.data
     user = query.from_user
@@ -633,85 +494,14 @@ async def handle_subscription_callback(query: CallbackQuery) -> None:
         await send_subscription_invoice(query.message, plan_key)
 
 
-@dp.callback_query(F.data.startswith("topup_"))
-async def handle_topup_callback(query: CallbackQuery) -> None:
-    """Обработка выбора суммы пополнения."""
-    await query.answer()
-    data = query.data
-    user = query.from_user
-    if not user:
-        return
-
-    # Обработка кнопки "Назад" из режима ввода
-    if data == "topup_back":
-        # Возвращаем меню выбора суммы
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="50 ⭐️", callback_data="topup_50"),
-                    InlineKeyboardButton(text="100 ⭐️", callback_data="topup_100"),
-                ],
-                [
-                    InlineKeyboardButton(text="200 ⭐️", callback_data="topup_200"),
-                    InlineKeyboardButton(text="500 ⭐️", callback_data="topup_500"),
-                ],
-                [
-                    InlineKeyboardButton(text="💬 Другая сумма", callback_data="topup_custom"),
-                ],
-                [
-                    InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_home"),
-                ],
-            ]
-        )
-        await query.message.edit_text(
-            "💰 Выберите сумму пополнения баланса:",
-            reply_markup=keyboard,
-        )
-        return
-
-    if data == "topup_custom":
-        # Переходим в режим ввода произвольной суммы
-        state = get_user_state(user.id)
-        state["mode"] = "topup_input"
-        await query.message.edit_text(
-            "💰 Введите сумму пополнения в звёздах (целое число):\n"
-            "Например: 150",
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="topup_back")]
-                ]
-            ),
-        )
-        return
-
-    # Предопределённая сумма
-    try:
-        amount = int(data.split("_")[1])
-    except (IndexError, ValueError):
-        await query.message.edit_text("Ошибка. Попробуйте ещё раз.")
-        return
-
-    if TEST_SUBSCRIPTION_MODE:
-        state = get_user_state(user.id)
-        state["balance"] += amount
-        await query.message.edit_text(
-            f"Баланс пополнен на {amount} (ТЕСТОВЫЙ РЕЖИМ).\n"
-            f"Текущий баланс: {state['balance']} 💰"
-        )
-    else:
-        await send_topup_invoice(query.message, amount)
-
-
 @dp.pre_checkout_query()
 async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery) -> None:
-    """Подтверждение платежа."""
     logger.info(f"Pre-checkout query: {pre_checkout_query.invoice_payload}")
     await pre_checkout_query.answer(ok=True)
 
 
 @dp.message(F.successful_payment)
 async def successful_payment_handler(message: Message) -> None:
-    """Успешный платеж → активируем подписку или начисляем баланс."""
     user = message.from_user
     if not user:
         return
@@ -735,38 +525,21 @@ async def successful_payment_handler(message: Message) -> None:
             await message.answer(
                 "✅ Оплата прошла успешно, но возникла ошибка активации. Обратитесь в поддержку."
             )
-    elif payload.startswith("topup_"):
-        try:
-            amount = int(payload.replace("topup_", ""))
-        except ValueError:
-            amount = 0
-        if amount > 0:
-            state = get_user_state(user.id)
-            state["balance"] += amount
-            await message.answer(
-                f"✅ Баланс успешно пополнен на {amount} ⭐️!\n"
-                f"Текущий баланс: {state['balance']} 💰"
-            )
-        else:
-            await message.answer("✅ Оплата прошла, но возникла ошибка начисления.")
     else:
         await message.answer("✅ Оплата прошла успешно! Спасибо!")
 
 
 @dp.message(Command("paysupport"))
 async def pay_support_handler(message: Message) -> None:
-    """Информация о поддержке платежей."""
     await message.answer(
         "🛟 Поддержка платежей\n\n"
-        "По вопросам возврата средств и проблем с оплатой обращайтесь:\n"
-        "• Напишите @Suppor_Tutor_bot\n\n"
-        "Возврат средств возможен в течение 7 дней после покупки при наличии технических проблем."
+        "Если у тебя возникли вопросы с оплатой или нужно вернуть средства:\n"
+        "• Напиши @your_support_username\n\n"
+        "Возврат возможен в течение 7 дней после покупки при наличии технических проблем."
     )
 
 
-# ------------------- Задания по предметам (тесты) -------------------
-
-
+# ------------------- Задания по предметам -------------------
 @dp.callback_query(F.data == "menu_tasks")
 async def menu_tasks(query: CallbackQuery) -> None:
     await query.answer()
@@ -799,7 +572,7 @@ async def handle_subject_task(query: CallbackQuery) -> None:
     idx = random.randint(0, len(tasks) - 1)
     task = tasks[idx]
 
-    state["mode"] = "quiz_answer"
+    state["mode"] = state.get("mode", "short")  # не меняем
     state["quiz_subject"] = subject_key
     state["quiz_question_index"] = idx
 
@@ -834,7 +607,7 @@ async def handle_quiz_answer(query: CallbackQuery) -> None:
     display_name = user.full_name or user.username or f"user_{user.id}"
     state = get_user_state(user.id, display_name=display_name)
 
-    data = query.data  # quiz_subject_idx_answer
+    data = query.data
     try:
         _, subject_key, q_idx_str, ans_idx_str = data.split("_", 3)
         q_idx = int(q_idx_str)
@@ -856,25 +629,15 @@ async def handle_quiz_answer(query: CallbackQuery) -> None:
 
     task = tasks[q_idx]
     correct_idx = task["answer_index"]
-    today = date.today()
 
     if ans_idx == correct_idx:
-        # Проверяем, получал ли уже награду сегодня
-        if state.get("last_test_date") != today:
-            state["last_test_date"] = today
-            state["xp"] += TASK_XP_REWARD
-            state["balance"] += TASK_BALANCE_REWARD
-            text = (
-                "✅ Верно! Ты получаешь награду за тест!\n\n"
-                f"+{TASK_XP_REWARD} XP и +{TASK_BALANCE_REWARD} к балансу. 💰\n\n"
-                f"Правильный ответ: {task['options'][correct_idx]}"
-            )
-        else:
-            text = (
-                "✅ Верно, но сегодня ты уже получал(а) награду за тест.\n"
-                "Приходи завтра за новой!\n\n"
-                f"Правильный ответ: {task['options'][correct_idx]}"
-            )
+        state["xp"] += TASK_XP_REWARD
+        state["balance"] += TASK_BALANCE_REWARD
+        text = (
+            "✅ Верно!\n\n"
+            f"+{TASK_XP_REWARD} XP и +{TASK_BALANCE_REWARD} к балансу. 💰\n\n"
+            f"Правильный ответ: {task['options'][correct_idx]}"
+        )
     else:
         text = (
             "❌ Неверно.\n\n"
@@ -882,7 +645,6 @@ async def handle_quiz_answer(query: CallbackQuery) -> None:
             "Попробуй ещё одно задание! 🙂"
         )
 
-    state["mode"] = None
     state["quiz_subject"] = None
     state["quiz_question_index"] = None
 
@@ -892,7 +654,7 @@ async def handle_quiz_answer(query: CallbackQuery) -> None:
     )
 
 
-# ------------------- Меню (профиль, баланс, топ) -------------------
+# ------------------- Меню, профиль, режимы -------------------
 
 
 @dp.message(Command("menu"))
@@ -913,6 +675,37 @@ async def cmd_profile(message: Message) -> None:
 @dp.message(Command("top"))
 async def cmd_top(message: Message) -> None:
     await message.answer(format_leaderboard())
+@dp.message(Command("mode"))
+async def cmd_mode(message: Message) -> None:
+    user = message.from_user
+    if not user:
+        return
+    await message.answer(
+        "Выбери режим объяснения:", reply_markup=build_mode_keyboard()
+    )
+
+
+@dp.callback_query(F.data.startswith("mode_"))
+async def handle_mode_callback(query: CallbackQuery) -> None:
+    await query.answer()
+    user = query.from_user
+    if not user:
+        return
+    display_name = user.full_name or user.username or f"user_{user.id}"
+    state = get_user_state(user.id, display_name=display_name)
+
+    data = query.data
+    if data == "mode_short":
+        state["mode"] = "short"
+    elif data == "mode_detailed":
+        state["mode"] = "detailed"
+    elif data == "mode_simple":
+        state["mode"] = "simple"
+
+    await query.message.edit_text(
+        f"Режим объяснения: {mode_label(state['mode'])}",
+        reply_markup=build_main_menu_keyboard(),
+    )
 
 
 @dp.callback_query(F.data.startswith("menu_"))
@@ -941,34 +734,44 @@ async def handle_menu_callback(query: CallbackQuery) -> None:
             reply_markup=build_main_menu_keyboard(),
         )
     elif data == "menu_topup":
-        # Показываем клавиатуру с вариантами сумм
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="50 ⭐️", callback_data="topup_50"),
-                    InlineKeyboardButton(text="100 ⭐️", callback_data="topup_100"),
-                ],
-                [
-                    InlineKeyboardButton(text="200 ⭐️", callback_data="topup_200"),
-                    InlineKeyboardButton(text="500 ⭐️", callback_data="topup_500"),
-                ],
-                [
-                    InlineKeyboardButton(text="💬 Другая сумма", callback_data="topup_custom"),
-                ],
-                [
-                    InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_home"),
-                ],
-            ]
-        )
+        state["mode"] = "topup"  # временно для ввода суммы
         await query.message.edit_text(
-            "💰 Выберите сумму пополнения баланса:",
-            reply_markup=keyboard,
+            "💰 Пополнение баланса (тестовый режим).\n\n"
+            "Введи число, на сколько пополнить баланс.\n"
+            "Например: <b>100</b>",
+            reply_markup=build_main_menu_keyboard(),
+        )
+    elif data == "menu_mode":
+        await query.message.edit_text(
+            "Выбери режим объяснения:",
+            reply_markup=build_mode_keyboard(),
         )
     elif data == "menu_home":
         await query.message.edit_text(
             "📱 Главное меню:",
             reply_markup=build_main_menu_keyboard(),
         )
+
+
+# ------------------- Режим /summary -------------------
+
+
+@dp.message(Command("summary"))
+async def cmd_summary(message: Message) -> None:
+    user = message.from_user
+    if not user:
+        return
+    state = get_user_state(user.id, display_name=(user.full_name or user.username))
+    history = state.get("history")
+    if not history or len(history) == 0:
+        await message.answer("Пока нет вопросов для конспекта. Задай мне что‑нибудь. 🙂")
+        return
+
+    text = "📝 Краткий конспект твоих последних вопросов:\n\n"
+    for i, q in enumerate(history, start=1):
+        text += f"{i}) {q}\n"
+
+    await message.answer(text)
 
 
 # ------------------- Хендлеры Q&A -------------------
@@ -980,9 +783,8 @@ async def cmd_start(message: Message) -> None:
     if not user:
         return
     display_name = user.full_name or user.username or f"user_{user.id}"
-    get_user_state(user.id, display_name=display_name)
-
-    text = (
+    state = get_user_state(user.id, display_name=display_name)
+text = (
         f"Привет, {user.first_name or 'ученик'}! 👋\n\n"
         "Я бот‑репетитор с ИИ 🤖📚\n\n"
         "Я умею:\n"
@@ -995,9 +797,10 @@ async def cmd_start(message: Message) -> None:
         "• /menu — главное меню 📱\n"
         "• /profile — профиль 📋\n"
         "• /top — лидерборд 🏆\n"
+        "• /mode — режим объяснения 🎛\n"
+        "• /summary — конспект последних вопросов 📝\n"
         "• /paysupport — поддержка платежей 🛟\n\n"
-        "А ещё есть задания по предметам в /menu → «Задания по предметам» 📆\n"
-        "Каждый день можно получить награду за первый правильный ответ! 🎁\n\n"
+        "А ещё есть задания по предметам в /menu → «Задания по предметам» 📆\n\n"
         "Просто задай вопрос текстом, голосом или пришли фото задания. 🙂"
     )
     await message.answer(text, reply_markup=build_main_menu_keyboard())
@@ -1016,11 +819,109 @@ async def cmd_help(message: Message) -> None:
         "• /menu — главное меню 📱\n"
         "• /profile — профиль 📋\n"
         "• /top — лидерборд 🏆\n"
-        "• /paysupport — поддержка платежей 🛟\n\n"
-        "Задания по предметам: /menu → «Задания по предметам» 📆\n"
-        "Награда за первый правильный ответ в день."
+        "• /mode — режим объяснения 🎛\n"
+        "• /summary — конспект 📝\n"
+        "• /paysupport — поддержка платежей 🛟"
     )
     await message.answer(text)
+
+
+def build_prompt_for_mode(state: dict, user_text: str) -> list[dict]:
+    """
+    Собираем messages для OpenAI в зависимости от режима.
+    """
+    mode = state.get("mode", "short")
+    if mode == "detailed":
+        system = (
+            "Ты доброжелательный и понятный репетитор. "
+            "Отвечай очень подробно, по шагам, с примерами, но по‑русски и без лишней воды."
+        )
+    elif mode == "simple":
+        system = (
+            "Ты репетитор, который объясняет максимально простым языком, "
+            "как другу, без сложных терминов. По‑русски."
+        )
+    else:  # short
+        system = (
+            "Ты репетитор, отвечающий кратко и по делу. "
+            "Дай 3–5 предложений, по‑русски."
+        )
+
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_text},
+    ]
+
+
+async def ask_ai_text_with_mode(state: dict, prompt: str) -> str:
+    if not client:
+        return "Извини, ИИ‑часть ещё не настроена (нет API ключа)."
+
+    messages = build_prompt_for_mode(state, prompt)
+
+    resp = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=messages,
+        temperature=0.4,
+    )
+    return resp.choices[0].message.content
+
+
+async def transcribe_audio(file_bytes: bytes, file_name: str = "voice.ogg") -> str:
+    """Функция для распознавания голосового сообщения"""
+    if not client:
+        return "Голосовое распознавание временно недоступно."
+    
+    try:
+        from io import BytesIO
+        audio_file = BytesIO(file_bytes)
+        audio_file.name = file_name
+        
+        transcription = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            language="ru"
+        )
+        return transcription.text
+    except Exception as e:
+        logger.exception("Ошибка при распознавании голоса: %s", e)
+        return "Не удалось распознать голосовое сообщение."
+        async def analyze_image_with_question(photo_bytes: bytes, question: str) -> str:
+    """Функция для анализа изображения с вопросом"""
+    if not client:
+        return "Анализ изображений временно недоступен."
+    
+    try:
+        import base64
+        from io import BytesIO
+        
+        base64_image = base64.b64encode(photo_bytes).decode('utf-8')
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"Ты репетитор. Помоги решить задание по этому изображению. Вопрос: {question}"
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=500
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        logger.exception("Ошибка при анализе изображения: %s", e)
+        return "Не удалось проанализировать изображение."
 
 
 @dp.message(F.text & ~F.via_bot & ~F.text.startswith("/"))
@@ -1031,26 +932,22 @@ async def handle_text(message: Message) -> None:
     display_name = user.full_name or user.username or f"user_{user.id}"
     state = get_user_state(user.id, display_name=display_name)
 
-    # Режим ввода произвольной суммы для пополнения
-    if state.get("mode") == "topup_input":
+    # Режим пополнения баланса
+    if state.get("mode") == "topup":
         txt = (message.text or "").strip()
         if not txt.isdigit():
-            await message.answer("Пожалуйста, введи целое число. Например: 150 💰")
+            await message.answer("Пожалуйста, введи целое число. Например: 100 💰")
             return
         amount = int(txt)
         if amount <= 0:
             await message.answer("Сумма должна быть положительной. 🙂")
             return
-        # Сбрасываем режим
-        state["mode"] = None
-        if TEST_SUBSCRIPTION_MODE:
-            state["balance"] += amount
-            await message.answer(
-                f"Баланс пополнен на {amount} (ТЕСТОВЫЙ РЕЖИМ).\n"
-                f"Текущий баланс: {state['balance']} 💰"
-            )
-        else:
-            await send_topup_invoice(message, amount)
+        state["balance"] += amount
+        state["mode"] = "short"
+        await message.answer(
+            f"Баланс пополнен на {amount} 💰\n"
+            f"Текущий баланс: {state['balance']} 💰"
+        )
         return
 
     # Обычный вопрос → проверяем доступ
@@ -1059,9 +956,12 @@ async def handle_text(message: Message) -> None:
 
     user_text = message.text or ""
 
+    # Сохраняем вопрос в историю для /summary
+    state["history"].append(user_text)
+
     await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
     try:
-        answer = await ask_ai_text(user_text)
+        answer = await ask_ai_text_with_mode(state, user_text)
     except Exception as e:
         logger.exception("Ошибка при запросе к OpenAI (текст): %s", e)
         answer = "Что-то пошло не так с ИИ. Попробуй ещё раз позже. 😔"
@@ -1093,68 +993,13 @@ async def handle_voice(message: Message) -> None:
         recognized_text = await transcribe_audio(file_bytes, file_name="voice.ogg")
         logger.info("Распознанный текст из голосового: %s", recognized_text)
 
-        answer = await ask_ai_text(
-            f"Ученик сказал голосом: «{recognized_text}». Ответь ему как репетитор."
+        # Добавляем в историю распознанный текст
+        state["history"].append(f"[voice] {recognized_text}")
+
+        answer = await ask_ai_text_with_mode(
+            state,
+            f"Ученик сказал голосом: «{recognized_text}». Ответь ему как репетитор.",
         )
 
-        await message.answer(
-            f"Я понял из голосового:\n\n«{recognized_text}»\n\nМой ответ:\n{answer}"
-        )
-    except Exception as e:
-        logger.exception("Ошибка при обработке голосового: %s", e)
-        await message.answer(
-            "Не получилось обработать голосовое. Попробуй ещё раз или напиши текстом. 😔"
-        )
-
-
-@dp.message(F.photo)
-async def handle_photo(message: Message) -> None:
-    user = message.from_user
-    if not user:
-        return
-    display_name = user.full_name or user.username or f"user_{user.id}"
-    state = get_user_state(user.id, display_name=display_name)
-
-    if not await ensure_access(message):
-        return
-
-    photos = message.photo
-    if not photos:
-        return
-
-    await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    photo = photos[-1]
-    try:
-        file = await bot.get_file(photo.file_id)
-        file_data = await bot.download_file(file.file_path)
-        file_bytes = file_data.read()
-
-        caption = message.caption or ""
-        question = caption.strip() or "Помоги разобрать это задание по фото."
-
-        answer = await analyze_image_with_question(file_bytes, question)
-        await message.answer(answer)
-    except Exception as e:
-        logger.exception("Ошибка при обработке фото: %s", e)
-        await message.answer(
-            "Не удалось обработать фото. Попробуй ещё раз или добавь подпись с вопросом. 😔"
-        )
-
-
-@dp.message()
-async def fallback_unknown(message: Message) -> None:
-    await message.answer(
-        "Извини, я понимаю только команды /start, /help, /menu, /paysupport, текст, голосовые и фото. 🙂"
-    )
-
-
-# ------------------- Точка входа -------------------
-
-
-async def main():
-    logger.info("Бот (aiogram 3) запускается...")
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        await message.answer
+        
