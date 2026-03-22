@@ -212,35 +212,45 @@ def build_subscription_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def build_main_menu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def build_main_menu_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                text="📋 Профиль", callback_data="menu_profile"
+            ),
+            InlineKeyboardButton(
+                text="💰 Пополнить баланс", callback_data="menu_topup"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="📆 Задания по предметам", callback_data="menu_tasks"
+            ),
+            InlineKeyboardButton(
+                text="🏆 Лидерборд", callback_data="menu_top"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="🎛 Режим объяснения", callback_data="menu_mode"
+            ),
+            InlineKeyboardButton(
+                text="📝 Экзамен", callback_data="menu_exam"
+            ),
+        ],
+    ]
+
+    # кнопку Админка добавляем только админу
+    if user_id is not None and user_id in ADMIN_IDS:
+        rows.append(
             [
                 InlineKeyboardButton(
-                    text="📋 Профиль", callback_data="menu_profile"
-                ),
-                InlineKeyboardButton(
-                    text="💰 Пополнить баланс", callback_data="menu_topup"
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📆 Задания по предметам", callback_data="menu_tasks"
-                ),
-                InlineKeyboardButton(
-                    text="🏆 Лидерборд", callback_data="menu_top"
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🎛 Режим объяснения", callback_data="menu_mode"
-                ),
-                InlineKeyboardButton(
-                    text="📝 Экзамен", callback_data="menu_exam"
-                ),
-            ],
-        ]
-    )
+                    text="⚙️ Админка", callback_data="menu_admin"
+                )
+            ]
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def build_subjects_keyboard() -> InlineKeyboardMarkup:
@@ -565,7 +575,7 @@ async def transcribe_audio(data: bytes, file_name: str = "audio.ogg") -> str:
 
     try:
         resp = client.audio.transcriptions.create(
-            model="whisper-1",  # правильная модель Whisper
+            model="whisper-1",
             file=audio_file,
         )
         text = getattr(resp, "text", None)
@@ -586,7 +596,7 @@ async def analyze_image_with_question(image_bytes: bytes, question: str) -> str:
 
     try:
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",  # модель с поддержкой vision
+            model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
@@ -637,7 +647,9 @@ async def send_subscription_invoice(message: Message, plan_key: str):
 async def send_topup_invoice(message: Message, amount: int):
     prices = [LabeledPrice(label="XTR", amount=amount)]
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=f"Оплатить {amount} ⭐️", pay=True)]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"Оплатить {amount} ⭐️", pay=True)]
+        ]
     )
     await message.answer_invoice(
         title="Пополнение баланса",
@@ -799,7 +811,7 @@ async def handle_subject_task(query: CallbackQuery) -> None:
     if not tasks:
         await query.message.edit_text(
             "Для этого предмета пока нет заданий. 😕",
-            reply_markup=build_main_menu_keyboard(),
+            reply_markup=build_main_menu_keyboard(user.id),
         )
         return
 
@@ -851,7 +863,7 @@ async def handle_quiz_answer(query: CallbackQuery) -> None:
     except Exception:
         await query.message.edit_text(
             "Что-то пошло не так с разбором ответа. 😔",
-            reply_markup=build_main_menu_keyboard(),
+            reply_markup=build_main_menu_keyboard(user.id),
         )
         return
 
@@ -859,7 +871,7 @@ async def handle_quiz_answer(query: CallbackQuery) -> None:
     if not tasks or not (0 <= q_idx < len(tasks)):
         await query.message.edit_text(
             "Вопрос не найден. Попробуй ещё раз. 🙂",
-            reply_markup=build_main_menu_keyboard(),
+            reply_markup=build_main_menu_keyboard(user.id),
         )
         return
 
@@ -896,7 +908,7 @@ async def handle_quiz_answer(query: CallbackQuery) -> None:
 
     await query.message.edit_text(
         text,
-        reply_markup=build_main_menu_keyboard(),
+        reply_markup=build_main_menu_keyboard(user.id),
     )
 
 
@@ -924,7 +936,7 @@ async def handle_exam_subject(query: CallbackQuery) -> None:
     if not tasks:
         await query.message.edit_text(
             "Для этого предмета пока нет заданий. 😕",
-            reply_markup=build_main_menu_keyboard(),
+            reply_markup=build_main_menu_keyboard(user.id),
         )
         return
 
@@ -948,7 +960,7 @@ async def send_exam_question(message: Message, user_id: int) -> None:
     if not state_exam:
         await message.edit_text(
             "Экзамен не найден. Начни заново командой /exam.",
-            reply_markup=build_main_menu_keyboard(),
+            reply_markup=build_main_menu_keyboard(user_id),
         )
         return
 
@@ -984,7 +996,7 @@ async def send_exam_question(message: Message, user_id: int) -> None:
                 "Ничего страшного, попробуй ещё раз после повторения темы. 🙂"
             )
 
-        await message.edit_text(text, reply_markup=build_main_menu_keyboard())
+        await message.edit_text(text, reply_markup=build_main_menu_keyboard(user_id))
         exam_state.pop(user_id, None)
         return
 
@@ -1023,7 +1035,7 @@ async def handle_exam_answer(query: CallbackQuery) -> None:
     except Exception:
         await query.message.edit_text(
             "Ошибка разбора ответа. Попробуй снова /exam.",
-            reply_markup=build_main_menu_keyboard(),
+            reply_markup=build_main_menu_keyboard(user.id),
         )
         return
 
@@ -1031,7 +1043,7 @@ async def handle_exam_answer(query: CallbackQuery) -> None:
     if not state_exam or state_exam["subject"] != subject_key:
         await query.message.edit_text(
             "Экзамен неактивен. Начни снова /exam.",
-            reply_markup=build_main_menu_keyboard(),
+            reply_markup=build_main_menu_keyboard(user.id),
         )
         return
 
@@ -1039,7 +1051,7 @@ async def handle_exam_answer(query: CallbackQuery) -> None:
     if not tasks or not (0 <= q_idx < len(tasks)):
         await query.message.edit_text(
             "Вопрос не найден. Попробуй ещё раз.",
-            reply_markup=build_main_menu_keyboard(),
+            reply_markup=build_main_menu_keyboard(user.id),
         )
         return
 
@@ -1064,7 +1076,9 @@ async def cmd_save(message: Message) -> None:
         return
     last = last_answer.get(user.id)
     if not last:
-        await message.answer("Пока нечего сохранять. Сначала задай вопрос и получи ответ. 🙂")
+        await message.answer(
+            "Пока нечего сохранять. Сначала задай вопрос и получи ответ. 🙂"
+        )
         return
 
     q, a = last
@@ -1081,7 +1095,9 @@ async def cmd_list(message: Message) -> None:
         return
     items = saved_items.get(user.id, [])
     if not items:
-        await message.answer("У тебя пока нет сохранённых задач. Используй /save после ответа.")
+        await message.answer(
+            "У тебя пока нет сохранённых задач. Используй /save после ответа."
+        )
         return
 
     text = "📚 Сохранённые задачи/объяснения:\n\n"
@@ -1137,7 +1153,9 @@ async def cmd_summary(message: Message) -> None:
 
 @dp.message(Command("menu"))
 async def cmd_menu(message: Message) -> None:
-    await message.answer("📱 Главное меню:", reply_markup=build_main_menu_keyboard())
+    user = message.from_user
+    uid = user.id if user else None
+    await message.answer("📱 Главное меню:", reply_markup=build_main_menu_keyboard(uid))
 
 
 @dp.message(Command("profile"))
@@ -1158,9 +1176,6 @@ async def cmd_top(message: Message) -> None:
 
 @dp.message(Command("mode"))
 async def cmd_mode(message: Message) -> None:
-    user = message.from_user
-    if not user:
-        return
     await message.answer("Выбери режим объяснения:", reply_markup=build_mode_keyboard())
 
 
@@ -1185,7 +1200,7 @@ async def handle_mode_callback(query: CallbackQuery) -> None:
 
     await query.message.edit_text(
         f"Режим объяснения: {mode_label(state['mode'])}",
-        reply_markup=build_main_menu_keyboard(),
+        reply_markup=build_main_menu_keyboard(user.id),
     )
 
 
@@ -1202,7 +1217,7 @@ async def handle_menu_callback(query: CallbackQuery) -> None:
     if data == "menu_profile":
         await query.message.edit_text(
             format_profile(state),
-            reply_markup=build_main_menu_keyboard(),
+            reply_markup=build_main_menu_keyboard(user.id),
         )
     elif data == "menu_tasks":
         await query.message.edit_text(
@@ -1213,7 +1228,7 @@ async def handle_menu_callback(query: CallbackQuery) -> None:
         text = await format_leaderboard()
         await query.message.edit_text(
             text,
-            reply_markup=build_main_menu_keyboard(),
+            reply_markup=build_main_menu_keyboard(user.id),
         )
     elif data == "menu_topup":
         kb = InlineKeyboardMarkup(
@@ -1263,8 +1278,13 @@ async def handle_menu_callback(query: CallbackQuery) -> None:
     elif data == "menu_home":
         await query.message.edit_text(
             "📱 Главное меню:",
-            reply_markup=build_main_menu_keyboard(),
+            reply_markup=build_main_menu_keyboard(user.id),
         )
+    elif data == "menu_admin":
+        if not is_admin(user.id):
+            await query.answer("Только для администратора.", show_alert=True)
+            return
+        await cmd_admin(query.message)
 
 
 # =================== Админка ===================
@@ -1441,7 +1461,7 @@ async def cmd_start(message: Message) -> None:
         "Каждый день можно получить награду за тест! 🎁\n\n"
         "Просто задай вопрос текстом, голосом или пришли фото задания. 🙂"
     )
-    await message.answer(text, reply_markup=build_main_menu_keyboard())
+    await message.answer(text, reply_markup=build_main_menu_keyboard(user.id))
 
 
 @dp.message(Command("help"))
@@ -1464,7 +1484,7 @@ async def cmd_help(message: Message) -> None:
         "• /paysupport — поддержка платежей 🛟"
     )
     if message.from_user and is_admin(message.from_user.id):
-        text += "\n\n(Админ: см. /admin для списка админ‑команд.)"
+        text += "\n\n(Админ: см. /admin или кнопку ⚙️ Админка в меню.)"
     await message.answer(text)
 
 
