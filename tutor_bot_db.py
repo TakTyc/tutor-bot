@@ -51,7 +51,7 @@ TASK_XP_REWARD = 5
 TASK_BALANCE_REWARD = 5
 MAX_HISTORY_PER_USER = 20
 
-ADMIN_IDS = {5418608670}  # сюда можно добавить ещё админов
+ADMIN_IDS = {5418608670}
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -79,6 +79,21 @@ SUBJECT_TASKS = {
         {
             "q": "Математика: чему равно √81?",
             "options": ["7", "8", "9", "10"],
+            "answer_index": 2,
+        },
+        {
+            "q": "Математика: чему равно 12 × 12?",
+            "options": ["124", "132", "144", "154"],
+            "answer_index": 2,
+        },
+        {
+            "q": "Математика: чему равно 3/4 от 40?",
+            "options": ["20", "25", "30", "35"],
+            "answer_index": 2,
+        },
+        {
+            "q": "Математика: чему равен периметр квадрата со стороной 5 см?",
+            "options": ["10 см", "15 см", "20 см", "25 см"],
             "answer_index": 2,
         },
     ],
@@ -121,6 +136,16 @@ SUBJECT_TASKS = {
             "q": "Физика: чему примерно равно ускорение свободного падения g?",
             "options": ["1 м/с²", "3 м/с²", "9,8 м/с²", "100 м/с²"],
             "answer_index": 2,
+        },
+        {
+            "q": "Физика: какая величина измеряется в джоулях (Дж)?",
+            "options": ["Энергия", "Сила", "Скорость", "Масса"],
+            "answer_index": 0,
+        },
+        {
+            "q": "Физика: как называется прибор для измерения силы тока?",
+            "options": ["Амперметр", "Вольтметр", "Термометр", "Барометр"],
+            "answer_index": 0,
         },
     ],
 }
@@ -240,7 +265,6 @@ def build_main_menu_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup
         ],
     ]
 
-    # кнопку Админка добавляем только админу
     if user_id is not None and user_id in ADMIN_IDS:
         rows.append(
             [
@@ -912,7 +936,7 @@ async def handle_quiz_answer(query: CallbackQuery) -> None:
     )
 
 
-# =================== Экзамен (/exam) ===================
+# =================== Экзамен ===================
 
 EXAM_QUESTIONS_PER_SUBJECT = 5
 
@@ -1076,9 +1100,7 @@ async def cmd_save(message: Message) -> None:
         return
     last = last_answer.get(user.id)
     if not last:
-        await message.answer(
-            "Пока нечего сохранять. Сначала задай вопрос и получи ответ. 🙂"
-        )
+        await message.answer("Пока нечего сохранять. Сначала задай вопрос и получи ответ. 🙂")
         return
 
     q, a = last
@@ -1095,9 +1117,7 @@ async def cmd_list(message: Message) -> None:
         return
     items = saved_items.get(user.id, [])
     if not items:
-        await message.answer(
-            "У тебя пока нет сохранённых задач. Используй /save после ответа."
-        )
+        await message.answer("У тебя пока нет сохранённых задач. Используй /save после ответа.")
         return
 
     text = "📚 Сохранённые задачи/объяснения:\n\n"
@@ -1496,7 +1516,6 @@ async def handle_text(message: Message) -> None:
     display_name = user.full_name or user.username or f"user_{user.id}"
     state = await get_user_state(user.id, display_name=display_name)
 
-    # режим ввода суммы пополнения
     if state.get("mode") == "topup_input":
         txt = (message.text or "").strip()
         if not txt.isdigit():
