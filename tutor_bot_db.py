@@ -1311,19 +1311,19 @@ async def handle_menu_callback(query: CallbackQuery) -> None:
 
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message) -> None:
-user = message.from_user
-if not user or not is_admin(user.id):
-return
+    user = message.from_user
+    if not user or not is_admin(user.id):
+        return
 
-text = (
-"🛠 Админ‑команды:\n\n"
-"/admin_top — топ по XP с user_id\n"
-"/admin_user USER_ID — показать профиль пользователя\n"
-"/grant_xp USER_ID XP — выдать опыт\n"
-"/grant_balance USER_ID AMOUNT — выдать баланс\n"
-"/grant_sub USER_ID PLAN — выдать подписку (day | month | year)\n"
-)
-await message.answer(text)
+    text = (
+        "🛠 Админ‑команды:\n\n"
+        "/admin_top — топ по XP с user_id\n"
+        "/admin_user USER_ID — показать профиль пользователя\n"
+        "/grant_xp USER_ID XP — выдать опыт\n"
+        "/grant_balance USER_ID AMOUNT — выдать баланс\n"
+        "/grant_sub USER_ID PLAN — выдать подписку (day | month | year)\n"
+    )
+    await message.answer(text)
 
 
 @dp.message(Command("admin_top"))
@@ -1381,7 +1381,7 @@ async def cmd_grant_xp(message: Message) -> None:
         return
 
     parts = (message.text or "").strip().split()
-  if len(parts) < 3 or not parts[1].isdigit() or not parts[2].isdigit():
+    if len(parts) < 3 or not parts[1].isdigit() or not parts[2].isdigit():
         await message.answer("Используй: /grant_xp USER_ID XP")
         return
 
@@ -1406,7 +1406,7 @@ async def cmd_grant_balance(message: Message) -> None:
 
     parts = (message.text or "").strip().split()
     if len(parts) < 3 or not parts[1].isdigit() or not parts[2].isdigit():
-        await message.answer("Используй: /grant_balance <user_id> <amount>")
+        await message.answer("Используй: /grant_balance USER_ID AMOUNT")
         return
 
     target_id = int(parts[1])
@@ -1431,8 +1431,8 @@ async def cmd_grant_sub(message: Message) -> None:
     parts = (message.text or "").strip().split()
     if len(parts) < 3 or not parts[1].isdigit():
         await message.answer(
-"Используй: /grant_sub USER_ID PLAN\nПлан: day | month | year"
-)
+            "Используй: /grant_sub USER_ID PLAN\nПлан: day | month | year"
+        )
         return
 
     target_id = int(parts[1])
